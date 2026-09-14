@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { appendRequestLog } from "../../lib/request-log";
 
 type GenerateBody = { topic?: string; style?: string; search?: boolean; config?: { textBase?: string; textKey?: string; textModel?: string; firecrawlKey?: string } };
 
@@ -34,13 +35,15 @@ async function callModel(topic: string, style: string, sources: string[], config
   const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   const base = (config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
   if (!apiKey || !base) return null;
+  const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_tokens: 3000, messages: [
+    { role: "system", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（字符串数组）、content（Markdown 字符串）。内容要有故事化开头、清晰小标题和可执行建议。` },
+    { role: "user", content: `主题：${topic}\n参考资料：${sources.join("\n") || "无"}` },
+  ], response_format: { type: "json_object" } };
+  await appendRequestLog({ type: "text", operation: "文章生成", endpoint: `${base}/chat/completions`, model: requestBody.model, requestBody });
   const response = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_tokens: 3000, messages: [
-      { role: "system", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（字符串数组）、content（Markdown 字符串）。内容要有故事化开头、清晰小标题和可执行建议。` },
-      { role: "user", content: `主题：${topic}\n参考资料：${sources.join("\n") || "无"}` },
-    ], response_format: { type: "json_object" } }),
+    body: JSON.stringify(requestBody),
     signal: AbortSignal.timeout(90000),
   });
   if (!response.ok) throw new Error("AI 服务返回错误");
