@@ -38,14 +38,15 @@ function extensionFrom(contentType: string | null, sourceUrl: string) {
   return [".png", ".jpg", ".jpeg", ".webp"].includes(extension) ? extension : ".png";
 }
 
-export async function saveArticleImage(articleId: string, sourceUrl: string) {
+export async function saveArticleImage(articleId: string, sourceUrl: string, name = "cover") {
   const database = getDatabase();
   const article = database.prepare("SELECT directory FROM articles WHERE id = ?").get(articleId) as { directory?: string } | undefined;
   if (!article?.directory) return null;
   const response = await fetch(sourceUrl, { signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new Error("无法下载生成的图片");
-  const filePath = path.join(article.directory, "assets", `cover${extensionFrom(response.headers.get("content-type"), sourceUrl)}`);
+  const safeName = name.replace(/[^a-z0-9-_]/gi, "-") || "image";
+  const filePath = path.join(article.directory, "assets", `${safeName}${extensionFrom(response.headers.get("content-type"), sourceUrl)}`);
   await fs.writeFile(filePath, Buffer.from(await response.arrayBuffer()));
-  database.prepare("UPDATE articles SET cover_path = ? WHERE id = ?").run(filePath, articleId);
+  if (safeName === "cover") database.prepare("UPDATE articles SET cover_path = ? WHERE id = ?").run(filePath, articleId);
   return filePath;
 }

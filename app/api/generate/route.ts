@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
 import { ResearchSource, saveGeneratedArticle } from "../../lib/article-store";
+import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 
 type GenerateBody = { topic?: string; style?: string; search?: boolean; config?: { textBase?: string; textKey?: string; textModel?: string; firecrawlKey?: string } };
 
@@ -19,11 +20,14 @@ const demo = (topic: string, style: string, sources: ResearchSource[]) => ({
 async function firecrawlSearch(topic: string, config?: GenerateBody["config"]) {
   const key = config?.firecrawlKey || process.env.FIRECRAWL_API_KEY;
   if (!key) return [] as ResearchSource[];
+  const endpoint = "https://api.firecrawl.dev/v1/search";
+  const requestBody = { query: topic, limit: 5 };
   try {
-    const response = await fetch("https://api.firecrawl.dev/v1/search", {
+    await appendRequestLog({ type: "text", operation: "Firecrawl 搜索", endpoint, model: "firecrawl", requestBody });
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: topic, limit: 5 }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(12000),
     });
     if (!response.ok) return [];
@@ -36,20 +40,26 @@ async function callModel(topic: string, style: string, sources: ResearchSource[]
   const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   const base = (config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
   if (!apiKey || !base) return null;
-  const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_tokens: 3000, messages: [
-    { role: "system", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（字符串数组）、content（Markdown 字符串）。内容要有故事化开头、清晰小标题和可执行建议。` },
+  const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_output_tokens: 3000, store: false, input: [
+    { role: "developer", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（严格返回 3–6 个字符串）、content（Markdown 字符串）。正文内容不得展示、罗列或引用参考资料、来源链接或引用列表；参考资料仅用于辅助事实判断。内容要有故事化开头、清晰小标题和可执行建议。` },
     { role: "user", content: `主题：${topic}\n参考资料：${sources.map((source) => `${source.title || "资料"}: ${source.url}`).join("\n") || "无"}` },
-  ], response_format: { type: "json_object" } };
-  await appendRequestLog({ type: "text", operation: "文章生成", endpoint: `${base}/chat/completions`, model: requestBody.model, requestBody });
-  const response = await fetch(`${base}/chat/completions`, {
+  ], text: { format: { type: "json_object" } } };
+  const endpoint = responsesEndpoint(base);
+  await appendRequestLog({ type: "text", operation: "文章生成", endpoint, model: requestBody.model, requestBody });
+  const timeoutMs = 360000;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) throw new Error("AI 服务返回错误");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const message = payload?.error?.message || payload?.error || payload?.message;
+    throw new Error(typeof message === "string" && message.trim() ? message : `AI 服务返回错误（${response.status}）`);
+  }
   const data = await response.json();
-  const raw = data.choices?.[0]?.message?.content || "";
+  const raw = responseOutputText(data);
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const value = JSON.parse(cleaned || "{}");
   if (typeof value.content !== "string" || !value.content.trim()) throw new Error("AI 返回内容为空");
@@ -65,12 +75,13 @@ export async function POST(request: Request) {
     const result = await callModel(topic, body.style || "默认", sources, body.config) || demo(topic, body.style || "默认", sources);
     const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
     const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources });
-    return NextResponse.json({ ...result, title, articleId: article.id });
+    return NextResponse.json({ ...result, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   } catch (error: any) {
     const configured = Boolean((body.config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY) && (body.config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL));
-    if (configured) return NextResponse.json({ error: error?.message || "AI 文章生成失败，请稍后重试" }, { status: 502 });
+    const timedOut = error?.name === "TimeoutError";
+    if (configured) return NextResponse.json({ error: timedOut ? "文章生成超过 6 分钟，请稍后重试或缩短主题后重试" : error?.message || "AI 文章生成失败，请稍后重试" }, { status: timedOut ? 504 : 502 });
     const result = demo(topic, body.style || "默认", sources);
     const article = await saveGeneratedArticle({ title: result.title, topic, style: body.style || "默认", content: result.content, sources });
-    return NextResponse.json({ ...result, articleId: article.id });
+    return NextResponse.json({ ...result, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   }
 }

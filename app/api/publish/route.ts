@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { appendRequestLog } from "../../lib/request-log";
 
 function markdownToHtml(markdown: string) {
   return markdown.split(/\n\s*\n/).filter(Boolean).map((block) => {
@@ -18,6 +19,7 @@ export async function POST(request: Request) {
   if (!appid || !secret) return NextResponse.json({ demo: true, message: "未配置微信公众号凭证，已保存到本地发布队列" });
   if (!coverUrl) return NextResponse.json({ error: "微信公众号草稿需要封面图，请先生成封面" }, { status: 400 });
   try {
+    await appendRequestLog({ type: "text", operation: "微信公众号获取 access_token", endpoint: "https://api.weixin.qq.com/cgi-bin/token", model: "微信公众号", requestBody: { grant_type: "client_credential" } });
     const tokenResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${encodeURIComponent(appid)}&secret=${encodeURIComponent(secret)}`, { signal: AbortSignal.timeout(15000) });
     const tokenData = await tokenResponse.json();
     if (!tokenData.access_token) throw new Error(tokenData.errmsg || "获取微信公众号 access_token 失败");
@@ -26,13 +28,17 @@ export async function POST(request: Request) {
     const image = await imageResponse.arrayBuffer();
     const form = new FormData();
     form.append("media", new Blob([image], { type: imageResponse.headers.get("content-type") || "image/png" }), "cover.png");
+    await appendRequestLog({ type: "image", operation: "微信公众号上传封面", endpoint: "https://api.weixin.qq.com/cgi-bin/material/add_material", model: "微信公众号", requestBody: { type: "image", coverUrl } });
     const uploadResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${tokenData.access_token}&type=image`, { method: "POST", body: form, signal: AbortSignal.timeout(30000) });
     const uploadData = await uploadResponse.json();
     if (!uploadData.media_id) throw new Error(uploadData.errmsg || "封面上传失败");
-    const draftResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${tokenData.access_token}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ articles: [{ title, author: config?.wechatAuthor || process.env.WECHAT_AUTHOR || "", content: markdownToHtml(content), thumb_media_id: uploadData.media_id, need_open_comment: 1, only_fans_can_comment: 0 }] }), signal: AbortSignal.timeout(30000) });
+    const draftBody = { articles: [{ title, author: config?.wechatAuthor || process.env.WECHAT_AUTHOR || "", content: markdownToHtml(content), thumb_media_id: uploadData.media_id, need_open_comment: 1, only_fans_can_comment: 0 }] };
+    await appendRequestLog({ type: "text", operation: "微信公众号创建草稿", endpoint: "https://api.weixin.qq.com/cgi-bin/draft/add", model: "微信公众号", requestBody: draftBody });
+    const draftResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${tokenData.access_token}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draftBody), signal: AbortSignal.timeout(30000) });
     const draftData = await draftResponse.json();
     if (!draftData.media_id) throw new Error(draftData.errmsg || "创建草稿失败");
     if (config?.wechatAutoPublish === "true" || process.env.WECHAT_AUTO_PUBLISH === "true") {
+      await appendRequestLog({ type: "text", operation: "微信公众号发布", endpoint: "https://api.weixin.qq.com/cgi-bin/freepublish/submit", model: "微信公众号", requestBody: { media_id: draftData.media_id } });
       const publishResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${tokenData.access_token}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ media_id: draftData.media_id }), signal: AbortSignal.timeout(30000) });
       const publishData = await publishResponse.json();
       if (publishData.errcode) throw new Error(publishData.errmsg || "微信公众号发布失败");
