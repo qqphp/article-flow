@@ -39,5 +39,6 @@ coverage/
 .DS_Store
 Thumbs.db
 
-# generated article assets
+# generated article data and assets
+data/
 articles/

@@ -1,5 +1,4 @@
-import { promises as fs } from "fs";
-import path from "path";
+import { getDatabase } from "./database";
 
 export type RequestLog = {
   id: string;
@@ -11,28 +10,32 @@ export type RequestLog = {
   requestBody: unknown;
 };
 
-const logFile = path.join(process.cwd(), "tmp", "request-logs.json");
-
 export async function appendRequestLog(log: Omit<RequestLog, "id" | "timestamp">) {
   try {
-    await fs.mkdir(path.dirname(logFile), { recursive: true });
-    let logs: RequestLog[] = [];
-    try {
-      logs = JSON.parse(await fs.readFile(logFile, "utf8"));
-    } catch {
-      logs = [];
-    }
-    logs.unshift({ ...log, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, timestamp: new Date().toISOString() });
-    await fs.writeFile(logFile, JSON.stringify(logs.slice(0, 1000), null, 2), "utf8");
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const timestamp = new Date().toISOString();
+    const database = getDatabase();
+    database.prepare(`INSERT INTO request_logs (id, timestamp, type, operation, endpoint, model, request_body)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, timestamp, log.type, log.operation, log.endpoint, log.model, JSON.stringify(log.requestBody));
+    database.prepare(`DELETE FROM request_logs WHERE id NOT IN (
+      SELECT id FROM request_logs ORDER BY timestamp DESC LIMIT 1000
+    )`).run();
   } catch {
     // Logging must not interrupt an AI request.
   }
 }
 
 export async function readRequestLogs() {
-  try {
-    return JSON.parse(await fs.readFile(logFile, "utf8")) as RequestLog[];
-  } catch {
-    return [] as RequestLog[];
-  }
+  const database = getDatabase();
+  const records = database.prepare("SELECT * FROM request_logs ORDER BY timestamp DESC LIMIT 1000").all() as Array<Record<string, string>>;
+  return records.map((record) => ({
+    id: record.id,
+    timestamp: record.timestamp,
+    type: record.type as RequestLog["type"],
+    operation: record.operation,
+    endpoint: record.endpoint,
+    model: record.model,
+    requestBody: JSON.parse(record.request_body),
+  }));
 }

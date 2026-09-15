@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
+import { ResearchSource, saveGeneratedArticle } from "../../lib/article-store";
 
 type GenerateBody = { topic?: string; style?: string; search?: boolean; config?: { textBase?: string; textKey?: string; textModel?: string; firecrawlKey?: string } };
 
-const demo = (topic: string, style: string, sources: string[]) => ({
+const demo = (topic: string, style: string, sources: ResearchSource[]) => ({
   title: topic || "把一个想法，变成值得分享的内容",
   alternatives: [
     `${topic || "内容创作"}：一套可复用的 ${style || "默认"} 写作方法`,
@@ -17,7 +18,7 @@ const demo = (topic: string, style: string, sources: string[]) => ({
 
 async function firecrawlSearch(topic: string, config?: GenerateBody["config"]) {
   const key = config?.firecrawlKey || process.env.FIRECRAWL_API_KEY;
-  if (!key) return [] as string[];
+  if (!key) return [] as ResearchSource[];
   try {
     const response = await fetch("https://api.firecrawl.dev/v1/search", {
       method: "POST",
@@ -27,17 +28,17 @@ async function firecrawlSearch(topic: string, config?: GenerateBody["config"]) {
     });
     if (!response.ok) return [];
     const data = await response.json();
-    return (data.data ?? data.results ?? []).map((item: any) => item.url || item.title).filter(Boolean).slice(0, 5);
+    return (data.data ?? data.results ?? []).map((item: any) => ({ title: item.title, url: item.url, description: item.description })).filter((item: ResearchSource) => Boolean(item.url)).slice(0, 5);
   } catch { return []; }
 }
 
-async function callModel(topic: string, style: string, sources: string[], config?: GenerateBody["config"]) {
+async function callModel(topic: string, style: string, sources: ResearchSource[], config?: GenerateBody["config"]) {
   const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   const base = (config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
   if (!apiKey || !base) return null;
   const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_tokens: 3000, messages: [
     { role: "system", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（字符串数组）、content（Markdown 字符串）。内容要有故事化开头、清晰小标题和可执行建议。` },
-    { role: "user", content: `主题：${topic}\n参考资料：${sources.join("\n") || "无"}` },
+    { role: "user", content: `主题：${topic}\n参考资料：${sources.map((source) => `${source.title || "资料"}: ${source.url}`).join("\n") || "无"}` },
   ], response_format: { type: "json_object" } };
   await appendRequestLog({ type: "text", operation: "文章生成", endpoint: `${base}/chat/completions`, model: requestBody.model, requestBody });
   const response = await fetch(`${base}/chat/completions`, {
@@ -61,11 +62,15 @@ export async function POST(request: Request) {
   if (!topic) return NextResponse.json({ error: "请输入文章主题" }, { status: 400 });
   const sources = body.search ? await firecrawlSearch(topic, body.config) : [];
   try {
-    const result = await callModel(topic, body.style || "默认", sources, body.config);
-    return NextResponse.json(result || demo(topic, body.style || "默认", sources));
+    const result = await callModel(topic, body.style || "默认", sources, body.config) || demo(topic, body.style || "默认", sources);
+    const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
+    const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources });
+    return NextResponse.json({ ...result, title, articleId: article.id });
   } catch (error: any) {
     const configured = Boolean((body.config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY) && (body.config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL));
     if (configured) return NextResponse.json({ error: error?.message || "AI 文章生成失败，请稍后重试" }, { status: 502 });
-    return NextResponse.json(demo(topic, body.style || "默认", sources));
+    const result = demo(topic, body.style || "默认", sources);
+    const article = await saveGeneratedArticle({ title: result.title, topic, style: body.style || "默认", content: result.content, sources });
+    return NextResponse.json({ ...result, articleId: article.id });
   }
 }
