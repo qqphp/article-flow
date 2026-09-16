@@ -148,7 +148,7 @@ function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, ru
     if (!article || operation || running) return;
     setOperation("publish"); setProgress(8);
     try {
-      const response = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platform: "wechat", title: displayTitle, content: article.humanizedContent && humanized ? article.humanizedContent : article.content, coverUrl: article.imageUrl, config: getConfig() }) });
+      const response = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platform: "wechat", title: displayTitle, content: article.humanizedContent && humanized ? article.humanizedContent : article.content, articleId: article.articleId, config: getConfig() }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || "发布失败");
       const queue = JSON.parse(localStorage.getItem("article-flow-queue") || "[]"); queue.unshift({ id: `${Date.now()}`, title: displayTitle, status: data.demo ? "草稿" : "已发布", meta: `${style} · ${(displayContent || "").length.toLocaleString()} 字`, color: "lavender" }); localStorage.setItem("article-flow-queue", JSON.stringify(queue.slice(0, 20))); window.dispatchEvent(new Event("article-flow-queue-updated")); notify(data.message || "已加入发布队列");
     } catch (error: any) { notify(error.message || "发布失败，请检查配置"); } finally { finishOperation(); }

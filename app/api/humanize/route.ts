@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
+import { modelFetch } from "../../lib/model-fetch";
 
 export async function POST(request: Request) {
   const { content, config } = await request.json();
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
     const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.8, store: false, input: [{ role: "developer", content: "请对下面的中文文章做自然化编辑：保留事实、结构和观点，减少模板化表达，加入更自然的句式变化，只输出处理后的 Markdown 正文。" }, { role: "user", content }] };
     const endpoint = responsesEndpoint(base);
     await appendRequestLog({ type: "text", operation: "文章去痕", endpoint, model: requestBody.model, requestBody });
-    const response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(20000) });
+    const response = await modelFetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(60000) });
     if (!response.ok) throw new Error("humanize failed");
     const data = await response.json();
     const generated = responseOutputText(data) || content;

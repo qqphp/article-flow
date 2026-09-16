@@ -1,4 +1,5 @@
 import { appendRequestLog } from "./request-log";
+import { modelFetch } from "./model-fetch";
 
 type ImageConfig = Record<string, string | undefined> | undefined;
 
@@ -9,11 +10,11 @@ export async function generateImage(input: { prompt: string; size: string; confi
 
   const requestBody = { model: input.config?.imageModel || process.env.AI_IMAGE_MODEL || "gpt-image-2.5-flare", prompt: input.prompt, size: input.size };
   await appendRequestLog({ type: "image", operation: input.operation, endpoint, model: requestBody.model, requestBody });
-  const response = await fetch(endpoint, {
+  const response = await modelFetch(endpoint, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(360000),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw new Error(data?.error?.message || data?.error || data?.message || "图片生成服务返回错误");

@@ -5,6 +5,7 @@ import { getDatabase } from "./database";
 export type ResearchSource = { title?: string; url: string; description?: string };
 
 const articlesDirectory = path.join(process.cwd(), "data", "articles");
+type ArticleRecord = { directory?: string; cover_path?: string };
 
 function createArticleId(title: string) {
   const slug = title.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "").slice(0, 36) || "article";
@@ -40,7 +41,7 @@ function extensionFrom(contentType: string | null, sourceUrl: string) {
 
 export async function saveArticleImage(articleId: string, sourceUrl: string, name = "cover") {
   const database = getDatabase();
-  const article = database.prepare("SELECT directory FROM articles WHERE id = ?").get(articleId) as { directory?: string } | undefined;
+  const article = database.prepare("SELECT directory FROM articles WHERE id = ?").get(articleId) as ArticleRecord | undefined;
   if (!article?.directory) return null;
   const response = await fetch(sourceUrl, { signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new Error("无法下载生成的图片");
@@ -49,4 +50,22 @@ export async function saveArticleImage(articleId: string, sourceUrl: string, nam
   await fs.writeFile(filePath, Buffer.from(await response.arrayBuffer()));
   if (safeName === "cover") database.prepare("UPDATE articles SET cover_path = ? WHERE id = ?").run(filePath, articleId);
   return filePath;
+}
+
+export async function readArticleAsset(articleId: string, assetName: string) {
+  if (path.basename(assetName) !== assetName) return null;
+  const article = getDatabase().prepare("SELECT directory FROM articles WHERE id = ?").get(articleId) as ArticleRecord | undefined;
+  if (!article?.directory) return null;
+  const assetsDirectory = path.resolve(article.directory, "assets");
+  const filePath = path.resolve(assetsDirectory, assetName);
+  if (path.relative(assetsDirectory, filePath).startsWith("..")) return null;
+  try { return { filePath, data: await fs.readFile(filePath) }; } catch { return null; }
+}
+
+export function getArticleCoverPath(articleId: string) {
+  const article = getDatabase().prepare("SELECT directory, cover_path FROM articles WHERE id = ?").get(articleId) as ArticleRecord | undefined;
+  if (!article?.directory || !article.cover_path) return null;
+  const assetsDirectory = path.resolve(article.directory, "assets");
+  const filePath = path.resolve(article.cover_path);
+  return path.relative(assetsDirectory, filePath).startsWith("..") ? null : filePath;
 }

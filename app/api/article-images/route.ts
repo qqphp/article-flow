@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
+import path from "path";
 import { saveArticleImage } from "../../lib/article-store";
 import { generateImage } from "../../lib/image-generation";
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
+import { modelFetch } from "../../lib/model-fetch";
 
 type Config = Record<string, string | undefined>;
 type ImagePlan = { prompt: string; anchor: string };
+const localAssetUrl = (articleId: string, filePath: string) => `/api/articles/${encodeURIComponent(articleId)}/assets/${encodeURIComponent(path.basename(filePath))}`;
 
 async function createParagraphPrompts(title: string, content: string, config?: Config) {
   const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
@@ -23,7 +26,7 @@ async function createParagraphPrompts(title: string, content: string, config?: C
   };
   const endpoint = responsesEndpoint(baseUrl);
   await appendRequestLog({ type: "text", operation: "提炼段落配图提示词", endpoint, model: requestBody.model, requestBody });
-  const response = await fetch(endpoint, {
+  const response = await modelFetch(endpoint, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
@@ -42,23 +45,26 @@ async function createParagraphPrompts(title: string, content: string, config?: C
 export async function POST(request: Request) {
   const { title, content, config, articleId } = await request.json() as { title?: string; content?: string; config?: Config; articleId?: string };
   if (!title?.trim() || !content?.trim()) return NextResponse.json({ error: "缺少文章标题或正文" }, { status: 400 });
+  if (!articleId) return NextResponse.json({ error: "缺少文章存档，无法保存本地图片" }, { status: 400 });
   try {
     const promptResult = await createParagraphPrompts(title, content, config);
     const coverPrompt = `公众号文章封面，主题：${title}。仅根据这个标题创作，现代编辑插画风，清晰单一视觉焦点，留白构图，无文字、无水印、无品牌标识。画面必须为 3:2 横向比例。`;
-    const cover = await generateImage({ prompt: coverPrompt, size: "1536x1024", config, operation: "生成文章封面" });
-    let savedCoverPath: string | null = null;
-    if (cover.url && articleId) {
-      try { savedCoverPath = await saveArticleImage(articleId, cover.url, "cover"); } catch { /* Keep the provider URL if archiving fails. */ }
-    }
-    const paragraphImages = await Promise.all(promptResult.images.map(async ({ prompt, anchor }, index) => {
+    const coverTask = (async () => {
+      const cover = await generateImage({ prompt: coverPrompt, size: "1536x1024", config, operation: "生成文章封面" });
+      if (!cover.url) throw new Error("图片服务未返回封面地址");
+      const savedCoverPath = await saveArticleImage(articleId, cover.url, "cover");
+      if (!savedCoverPath) throw new Error("无法保存本地封面图");
+      return { url: localAssetUrl(articleId, savedCoverPath), savedCoverPath, demo: cover.demo };
+    })();
+    const paragraphTask = Promise.all(promptResult.images.map(async ({ prompt, anchor }, index) => {
       const image = await generateImage({ prompt, size: "1024x1024", config, operation: `生成段落配图 ${index + 1}` });
-      let savedImagePath: string | null = null;
-      if (image.url && articleId) {
-        try { savedImagePath = await saveArticleImage(articleId, image.url, `paragraph-${index + 1}`); } catch { /* Keep the provider URL if archiving fails. */ }
-      }
-      return { prompt, anchor, url: image.url, savedImagePath };
+      if (!image.url) throw new Error(`图片服务未返回第 ${index + 1} 张段落图地址`);
+      const savedImagePath = await saveArticleImage(articleId, image.url, `paragraph-${index + 1}`);
+      if (!savedImagePath) throw new Error(`无法保存第 ${index + 1} 张本地段落图`);
+      return { prompt, anchor, url: localAssetUrl(articleId, savedImagePath), savedImagePath, demo: image.demo };
     }));
-    return NextResponse.json({ coverUrl: cover.url, savedCoverPath, paragraphImages, prompts: promptResult.images.map((image) => image.prompt), demo: promptResult.demo || cover.demo || paragraphImages.some((image) => !image.url) });
+    const [cover, paragraphImages] = await Promise.all([coverTask, paragraphTask]);
+    return NextResponse.json({ coverUrl: cover.url, savedCoverPath: cover.savedCoverPath, paragraphImages, prompts: promptResult.images.map((image) => image.prompt), demo: promptResult.demo || cover.demo || paragraphImages.some((image) => image.demo) });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "封面与配图生成失败" }, { status: 502 });
   }

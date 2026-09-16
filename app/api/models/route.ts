@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
+import { modelFetch } from "../../lib/model-fetch";
 
 type ModelsBody = { type?: "text" | "image"; baseUrl?: string; apiKey?: string };
 
@@ -17,7 +18,7 @@ export async function POST(request: Request) {
   const endpoint = modelsEndpoint(body.baseUrl, type);
   await appendRequestLog({ type, operation: "获取可用模型", endpoint, model: "-", requestBody: { method: "GET" } });
   try {
-    const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(20000) });
+    const response = await modelFetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(20000) });
     if (!response.ok) return NextResponse.json({ error: `获取模型失败（${response.status}）` }, { status: response.status });
     const payload = await response.json();
     const items = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : Array.isArray(payload) ? payload : [];
