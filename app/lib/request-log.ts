@@ -39,3 +39,8 @@ export async function readRequestLogs() {
     requestBody: JSON.parse(record.request_body),
   }));
 }
+
+export async function clearRequestLogs() {
+  const database = getDatabase();
+  return database.prepare("DELETE FROM request_logs").run().changes;
+}

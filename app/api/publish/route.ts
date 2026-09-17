@@ -24,6 +24,8 @@ function markdownToWechatHtml(markdown: string) {
   parser.renderer.rules.blockquote_open = () => "<blockquote style=\"border-left:4px solid #ddd;padding-left:15px;margin:15px 0;color:#666;font-style:italic;\">";
   parser.renderer.rules.bullet_list_open = () => "<ul style=\"padding-left:20px;margin:10px 0;\">";
   parser.renderer.rules.ordered_list_open = () => "<ol style=\"padding-left:20px;margin:10px 0;\">";
+  parser.renderer.rules.strong_open = () => "<span style=\"font-weight:700;\">";
+  parser.renderer.rules.strong_close = () => "</span>";
   return parser.render(markdown).replace(/>\s+</g, "><").trim();
 }
 
