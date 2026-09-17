@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
-import { ResearchSource, saveGeneratedArticle } from "../../lib/article-store";
+import { readArticle, ResearchSource, saveGeneratedArticle } from "../../lib/article-store";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
 
@@ -75,14 +75,16 @@ export async function POST(request: Request) {
   try {
     const result = await callModel(topic, body.style || "默认", sources, body.config) || demo(topic, body.style || "默认", sources);
     const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
-    const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources });
-    return NextResponse.json({ ...result, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
+    const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources, alternatives: result.alternatives });
+    const saved = await readArticle(article.id);
+    return NextResponse.json({ ...result, ...saved, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   } catch (error: any) {
     const configured = Boolean((body.config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY) && (body.config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL));
     const timedOut = error?.name === "TimeoutError";
     if (configured) return NextResponse.json({ error: timedOut ? "文章生成超过 6 分钟，请稍后重试或缩短主题后重试" : error?.message || "AI 文章生成失败，请稍后重试" }, { status: timedOut ? 504 : 502 });
     const result = demo(topic, body.style || "默认", sources);
-    const article = await saveGeneratedArticle({ title: result.title, topic, style: body.style || "默认", content: result.content, sources });
-    return NextResponse.json({ ...result, articleId: article.id, firecrawlSearched: Boolean(body.search) });
+    const article = await saveGeneratedArticle({ title: result.title, topic, style: body.style || "默认", content: result.content, sources, alternatives: result.alternatives });
+    const saved = await readArticle(article.id);
+    return NextResponse.json({ ...result, ...saved, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   }
 }
