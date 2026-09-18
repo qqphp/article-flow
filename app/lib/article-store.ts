@@ -3,7 +3,8 @@ import path from "path";
 import { getDatabase } from "./database";
 
 export type ResearchSource = { title?: string; url: string; description?: string };
-export type ParagraphImage = { url: string; filePath: string; anchor?: string; prompt?: string };
+export type ParagraphImage = { url?: string; filePath?: string; anchor?: string; prompt: string; error?: string };
+export type CoverImage = { url?: string; filePath?: string; prompt: string; error?: string };
 
 type ArticleRecord = {
   id: string;
@@ -17,7 +18,10 @@ type ArticleRecord = {
   humanized_markdown_path?: string | null;
   layout_markdown_path?: string | null;
   cover_image_url?: string | null;
+  cover_prompt?: string | null;
+  cover_error?: string | null;
   paragraph_image_urls?: string | null;
+  paragraph_image_plans?: string | null;
   alternative_titles?: string | null;
   created_at: string;
 };
@@ -53,6 +57,15 @@ function parseJsonArray(value?: string | null) {
   try {
     const parsed = JSON.parse(value || "[]");
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseParagraphImagePlans(value?: string | null): ParagraphImage[] {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is ParagraphImage => Boolean(item && typeof item === "object" && typeof item.prompt === "string" && item.prompt.trim())) : [];
   } catch {
     return [];
   }
@@ -110,6 +123,7 @@ export async function readArticle(articleId: string) {
     const parsed = JSON.parse(sourcesFile || "{}");
     if (Array.isArray(parsed.sources)) sources = parsed.sources;
   } catch { /* A damaged sources file must not hide the article. */ }
+  const paragraphPlans = parseParagraphImagePlans(article.paragraph_image_plans);
   const paragraphImageUrls = parseJsonArray(article.paragraph_image_urls);
   return {
     articleId: article.id,
@@ -121,7 +135,9 @@ export async function readArticle(articleId: string) {
     humanizedContent: humanized ? markdownBody(humanized, article.title) : null,
     layoutContent: layout ? browserMarkdown(article.id, markdownBody(layout, article.title)) : null,
     imageUrl: article.cover_image_url || null,
-    paragraphImages: paragraphImageUrls.map((url) => ({ url })),
+    coverPrompt: article.cover_prompt || null,
+    coverError: article.cover_error || null,
+    paragraphImages: paragraphPlans.length ? paragraphPlans.map(({ url, anchor, prompt, error }) => ({ url, anchor, prompt, error })) : paragraphImageUrls.map((url) => ({ url, prompt: "" })),
     sources,
     firecrawlSearched: sources.length > 0,
     createdAt: article.created_at,
@@ -148,17 +164,43 @@ export async function saveHumanizedArticle(articleId: string, content: string) {
   await fs.writeFile(filePath, markdownDocument(article, content, "humanized"), "utf8");
   getDatabase().prepare(`UPDATE articles
     SET humanized_markdown_path = ?, layout_markdown_path = NULL, cover_path = NULL,
-        cover_image_url = NULL, paragraph_image_urls = '[]'
+        cover_image_url = NULL, cover_prompt = NULL, cover_error = NULL,
+        paragraph_image_urls = '[]', paragraph_image_plans = '[]'
     WHERE id = ?`).run(filePath, articleId);
   const saved = await fs.readFile(filePath, "utf8");
   return markdownBody(saved, article.title);
 }
 
+export async function beginArticleImageGeneration(articleId: string, coverPrompt: string, images: ParagraphImage[]) {
+  const article = getArticleRecord(articleId);
+  if (!article) return null;
+  getDatabase().prepare(`UPDATE articles
+    SET layout_markdown_path = NULL, cover_path = NULL, cover_image_url = ?,
+        cover_prompt = ?, cover_error = NULL, paragraph_image_urls = '[]', paragraph_image_plans = ?
+    WHERE id = ?`).run(null, coverPrompt, JSON.stringify(images.map(({ prompt, anchor }) => ({ prompt, anchor }))), articleId);
+  return article;
+}
+
+export async function readArticleImageState(articleId: string) {
+  const article = getArticleRecord(articleId);
+  if (!article?.cover_prompt) return null;
+  return {
+    cover: {
+      prompt: article.cover_prompt,
+      url: article.cover_image_url || undefined,
+      filePath: article.cover_path || undefined,
+      error: article.cover_error || undefined,
+    } satisfies CoverImage,
+    paragraphImages: parseParagraphImagePlans(article.paragraph_image_plans),
+  };
+}
+
 function insertParagraphImages(content: string, images: ParagraphImage[], directory: string) {
   const blocks = content.trim().split(/\r?\n\s*\r?\n/).filter(Boolean);
-  const imagesByBlock = new Map<number, Array<{ image: ParagraphImage; index: number }>>();
+  const imagesByBlock = new Map<number, Array<{ image: ParagraphImage & { url: string; filePath: string }; index: number }>>();
   const usedBlocks = new Set<number>();
-  images.forEach((image, index) => {
+  const generatedImages = images.filter((image): image is ParagraphImage & { url: string; filePath: string } => Boolean(image.url && image.filePath));
+  generatedImages.forEach((image, index) => {
     const matched = image.anchor ? blocks.findIndex((block, blockIndex) => !usedBlocks.has(blockIndex) && block.includes(image.anchor || "")) : -1;
     const fallback = Math.min(blocks.length - 1, Math.max(0, Math.floor(((index + 1) * blocks.length) / (images.length + 1))));
     const blockIndex = matched >= 0 ? matched : fallback;
@@ -174,16 +216,18 @@ function insertParagraphImages(content: string, images: ParagraphImage[], direct
   }).join("\n\n");
 }
 
-export async function saveArticleLayout(articleId: string, content: string, coverPath: string, coverUrl: string, images: ParagraphImage[]) {
+export async function saveArticleLayout(articleId: string, content: string, cover: CoverImage, images: ParagraphImage[]) {
   const article = getArticleRecord(articleId);
   if (!article) return null;
   const filePath = path.join(article.directory, "preview.md");
   const layout = insertParagraphImages(content, images, article.directory);
   await fs.writeFile(filePath, markdownDocument(article, layout, "layout-preview"), "utf8");
-  const paragraphUrls = images.map((image) => image.url);
+  const paragraphUrls = images.flatMap((image) => image.url ? [image.url] : []);
   getDatabase().prepare(`UPDATE articles
-    SET cover_path = ?, cover_image_url = ?, paragraph_image_urls = ?, layout_markdown_path = ?
-    WHERE id = ?`).run(coverPath, coverUrl, JSON.stringify(paragraphUrls), filePath, articleId);
+    SET cover_path = ?, cover_image_url = ?, cover_prompt = ?, cover_error = ?,
+        paragraph_image_urls = ?, paragraph_image_plans = ?, layout_markdown_path = ?
+    WHERE id = ?`).run(cover.filePath || null, cover.url || null, cover.prompt, cover.error || null,
+      JSON.stringify(paragraphUrls), JSON.stringify(images), filePath, articleId);
   const saved = await fs.readFile(filePath, "utf8");
   return browserMarkdown(articleId, markdownBody(saved, article.title));
 }

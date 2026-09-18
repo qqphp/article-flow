@@ -32,7 +32,10 @@ export function getDatabase() {
     humanized_markdown_path TEXT,
     layout_markdown_path TEXT,
     cover_image_url TEXT,
+    cover_prompt TEXT,
+    cover_error TEXT,
     paragraph_image_urls TEXT NOT NULL DEFAULT '[]',
+    paragraph_image_plans TEXT NOT NULL DEFAULT '[]',
     alternative_titles TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
   );
@@ -43,7 +46,10 @@ export function getDatabase() {
     ["humanized_markdown_path", "ALTER TABLE articles ADD COLUMN humanized_markdown_path TEXT"],
     ["layout_markdown_path", "ALTER TABLE articles ADD COLUMN layout_markdown_path TEXT"],
     ["cover_image_url", "ALTER TABLE articles ADD COLUMN cover_image_url TEXT"],
+    ["cover_prompt", "ALTER TABLE articles ADD COLUMN cover_prompt TEXT"],
+    ["cover_error", "ALTER TABLE articles ADD COLUMN cover_error TEXT"],
     ["paragraph_image_urls", "ALTER TABLE articles ADD COLUMN paragraph_image_urls TEXT NOT NULL DEFAULT '[]'"],
+    ["paragraph_image_plans", "ALTER TABLE articles ADD COLUMN paragraph_image_plans TEXT NOT NULL DEFAULT '[]'"],
     ["alternative_titles", "ALTER TABLE articles ADD COLUMN alternative_titles TEXT NOT NULL DEFAULT '[]'"],
   ] as const;
   for (const [column, sql] of migrations) {

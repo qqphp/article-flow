@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { articleAssetUrl, readArticle, readArticleSource, saveArticleImage, saveArticleLayout } from "../../lib/article-store";
+import { articleAssetUrl, beginArticleImageGeneration, CoverImage, ParagraphImage, readArticle, readArticleImageState, readArticleSource, saveArticleImage, saveArticleLayout } from "../../lib/article-store";
 import { generateImage } from "../../lib/image-generation";
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
@@ -7,6 +7,7 @@ import { modelFetch } from "../../lib/model-fetch";
 
 type Config = Record<string, string | undefined>;
 type ImagePlan = { prompt: string; anchor: string };
+type ImageTarget = { type: "cover" } | { type: "paragraph"; index: number };
 
 async function createParagraphPrompts(title: string, content: string, config?: Config) {
   const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
@@ -40,48 +41,63 @@ async function createParagraphPrompts(title: string, content: string, config?: C
   return { images, demo: false };
 }
 
+async function generateAndSaveImage(articleId: string, prompt: string, size: string, name: string, operation: string, config?: Config) {
+  try {
+    const image = await generateImage({ prompt, size, config, operation });
+    if (!image.url) throw new Error("图片服务未返回地址");
+    const filePath = await saveArticleImage(articleId, image.url, name);
+    if (!filePath) throw new Error("无法保存本地图片");
+    return { url: articleAssetUrl(articleId, filePath), filePath };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "图片生成失败" };
+  }
+}
+
 export async function POST(request: Request) {
-  const { title: requestedTitle, config, articleId } = await request.json() as { title?: string; config?: Config; articleId?: string };
+  const { title: requestedTitle, config, articleId, mode = "all", target } = await request.json() as { title?: string; config?: Config; articleId?: string; mode?: "all" | "single"; target?: ImageTarget };
   if (!articleId) return NextResponse.json({ error: "缺少文章存档，无法保存本地图片" }, { status: 400 });
   const source = await readArticleSource(articleId, true);
   if (!source?.content.trim()) return NextResponse.json({ error: "文章 Markdown 文件不存在或内容为空" }, { status: 404 });
   const title = requestedTitle?.trim() || source.article.title;
   const content = source.content;
   try {
-    const promptResult = await createParagraphPrompts(title, content, config);
-    const coverPrompt = `公众号文章封面，主题：${title}。仅根据这个标题创作，现代编辑插画风，清晰单一视觉焦点，留白构图，无文字、无水印、无品牌标识。画面必须为 3:2 横向比例。`;
-    const coverTask = (async () => {
-      const cover = await generateImage({ prompt: coverPrompt, size: "1536x1024", config, operation: "生成文章封面" });
-      if (!cover.url) throw new Error("图片服务未返回封面地址");
-      const savedCoverPath = await saveArticleImage(articleId, cover.url, "cover");
-      if (!savedCoverPath) throw new Error("无法保存本地封面图");
-      return { url: articleAssetUrl(articleId, savedCoverPath), savedCoverPath, demo: cover.demo };
-    })();
-    const paragraphTask = Promise.all(promptResult.images.map(async ({ prompt, anchor }, index) => {
-      let imageUrl: string | null = null;
-      let demo = false;
-      for (let attempt = 0; attempt <= 3; attempt++) {
-        try {
-          const image = await generateImage({ prompt, size: "1024x1024", config, operation: `生成段落配图 ${index + 1}（第 ${attempt + 1} 次）` });
-          if (!image.url) throw new Error("图片服务未返回地址");
-          imageUrl = image.url;
-          demo = image.demo;
-          break;
-        } catch (error) {
-          if (attempt === 3) throw new Error(`第 ${index + 1} 张段落图调用图片模型重试 3 次后仍失败：${error instanceof Error ? error.message : "未知错误"}`);
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
-        }
+    let cover: CoverImage;
+    let paragraphImages: ParagraphImage[];
+
+    if (mode === "single") {
+      const imageState = await readArticleImageState(articleId);
+      if (!imageState || !target) return NextResponse.json({ error: "图片提示词不存在，请先生成封面与配图" }, { status: 400 });
+      cover = imageState.cover;
+      paragraphImages = imageState.paragraphImages;
+      if (target.type === "cover") {
+        const result = await generateAndSaveImage(articleId, cover.prompt, "1536x1024", "cover", "重新生成文章封面", config);
+        cover = "error" in result ? { ...cover, error: result.error } : { prompt: cover.prompt, ...result };
+      } else if (Number.isInteger(target.index) && target.index >= 0 && target.index < paragraphImages.length) {
+        const current = paragraphImages[target.index];
+        const result = await generateAndSaveImage(articleId, current.prompt, "1024x1024", `paragraph-${target.index + 1}`, `重新生成段落配图 ${target.index + 1}`, config);
+        paragraphImages[target.index] = "error" in result ? { ...current, error: result.error } : { prompt: current.prompt, anchor: current.anchor, ...result };
+      } else {
+        return NextResponse.json({ error: "段落配图不存在" }, { status: 400 });
       }
-      if (!imageUrl) throw new Error(`第 ${index + 1} 张段落图生成失败`);
-      const savedImagePath = await saveArticleImage(articleId, imageUrl, `paragraph-${index + 1}`);
-      if (!savedImagePath) throw new Error(`无法保存第 ${index + 1} 张本地段落图`);
-      return { prompt, anchor, url: articleAssetUrl(articleId, savedImagePath), filePath: savedImagePath, demo };
-    }));
-    const [cover, paragraphImages] = await Promise.all([coverTask, paragraphTask]);
-    const layoutContent = await saveArticleLayout(articleId, content, cover.savedCoverPath, cover.url, paragraphImages);
+    } else {
+      const promptResult = await createParagraphPrompts(title, content, config);
+      const coverPrompt = `公众号文章封面，主题：${title}。仅根据这个标题创作，现代编辑插画风，清晰单一视觉焦点，留白构图，无文字、无水印、无品牌标识。画面必须为 3:2 横向比例。`;
+      cover = { prompt: coverPrompt };
+      paragraphImages = promptResult.images.map(({ prompt, anchor }) => ({ prompt, anchor }));
+      await beginArticleImageGeneration(articleId, coverPrompt, paragraphImages);
+      const [coverResult, paragraphResults] = await Promise.all([
+        generateAndSaveImage(articleId, coverPrompt, "1536x1024", "cover", "生成文章封面", config),
+        Promise.all(paragraphImages.map((image, index) => generateAndSaveImage(articleId, image.prompt, "1024x1024", `paragraph-${index + 1}`, `生成段落配图 ${index + 1}`, config))),
+      ]);
+      cover = { prompt: coverPrompt, ...coverResult };
+      paragraphImages = paragraphImages.map((image, index) => ({ ...image, ...paragraphResults[index] }));
+    }
+
+    const layoutContent = await saveArticleLayout(articleId, content, cover, paragraphImages);
     if (!layoutContent) throw new Error("无法保存排版预览 Markdown");
     const article = await readArticle(articleId);
-    return NextResponse.json({ article, layoutContent, coverUrl: cover.url, paragraphImages, prompts: promptResult.images.map((image) => image.prompt), demo: promptResult.demo || cover.demo || paragraphImages.some((image) => image.demo) });
+    const failed = [cover, ...paragraphImages].filter((image) => image.error).length;
+    return NextResponse.json({ article, layoutContent, coverUrl: cover.url || null, paragraphImages, failed });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "封面与配图生成失败" }, { status: 502 });
   }
