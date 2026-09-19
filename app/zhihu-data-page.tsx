@@ -34,7 +34,6 @@ type AsyncTask = {
 type PdfBlock = { type?: string; content?: string; image?: { media_type?: string; data?: string } };
 type PdfPage = { page?: number; blocks?: PdfBlock[] };
 
-const HOT_REFRESH_MS = 15 * 60 * 1000;
 const TASK_POLL_MS = 2000;
 
 const ZHIDA_MODELS = [
@@ -199,21 +198,25 @@ export default function ZhihuDataPage({ notify, onOpenSettings }: { notify: (mes
 }
 
 function HotListTab({ notify }: { notify: (message: string) => void }) {
-  const [limit, setLimit] = useState(30);
-  const [refreshId, setRefreshId] = useState(0);
+  const [request, setRequest] = useState({ limit: 30, force: false, seq: 0 });
   const [items, setItems] = useState<HotItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
+  const [fromCache, setFromCache] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
-    zhihuPost("/api/zhihu/hot-list", { limit }).then((data) => {
+    zhihuPost("/api/zhihu/hot-list", { limit: request.limit, force: request.force }).then((data) => {
       if (cancelled) return;
       setItems(data.items || []);
-      setLastUpdated(Date.now());
+      setLastUpdated(typeof data.fetchedAt === "number" ? data.fetchedAt : Date.now());
+      setNextRefreshAt(typeof data.nextRefreshAt === "number" ? data.nextRefreshAt : null);
+      setFromCache(Boolean(data.fromCache));
+      if (data.warning) notify(data.warning);
     }).catch((err: any) => {
       if (cancelled) return;
       setItems([]);
@@ -225,12 +228,13 @@ function HotListTab({ notify }: { notify: (message: string) => void }) {
     return () => { cancelled = true; };
     // notify is recreated each parent render and should not retrigger the hot list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [limit, refreshId]);
+  }, [request.seq, request.limit, request.force]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setRefreshId((value) => value + 1), HOT_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [limit, refreshId]);
+  const hintParts = [
+    "热榜按 15 分钟间隔缓存到本地数据库；未满间隔时打开页面会复用缓存，点击刷新会立即调用知乎接口。",
+  ];
+  if (lastUpdated) hintParts.push(`上次更新 ${formatClock(lastUpdated)}${fromCache ? "（缓存）" : ""}。`);
+  if (nextRefreshAt) hintParts.push(`下次可自动更新 ${formatClock(nextRefreshAt)}。`);
 
   return (
     <div className="panel zhihu-panel">
@@ -240,15 +244,27 @@ function HotListTab({ notify }: { notify: (message: string) => void }) {
           <p>当前站内正在讨论的问题和文章。</p>
         </div>
         <div className="zhihu-toolbar">
-          <select value={limit} onChange={(event) => setLimit(Number(event.target.value))}>
+          <select
+            value={request.limit}
+            onChange={(event) => {
+              const limit = Number(event.target.value);
+              setRequest((value) => ({ limit, force: false, seq: value.seq + 1 }));
+            }}
+          >
             <option value={10}>10 条</option>
             <option value={20}>20 条</option>
             <option value={30}>30 条</option>
           </select>
-          <button className="ghost-btn" onClick={() => setRefreshId((value) => value + 1)} disabled={loading}><RefreshCw size={14} className={loading ? "spin" : undefined}/> {loading ? "刷新中..." : "刷新"}</button>
+          <button
+            className="ghost-btn"
+            onClick={() => setRequest((value) => ({ ...value, force: true, seq: value.seq + 1 }))}
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? "spin" : undefined}/> {loading ? "刷新中..." : "刷新"}
+          </button>
         </div>
       </div>
-      <p className="zhihu-hot-hint">热榜每 15 分钟自动更新一次，也可点击刷新立即更新。{lastUpdated ? `上次更新 ${formatClock(lastUpdated)}。` : ""}</p>
+      <p className="zhihu-hot-hint">{hintParts.join(" ")}</p>
       {error ? <div className="empty-state">{error}</div> : loading && !items.length ? <div className="empty-state">正在获取热榜...</div> : items.length ? (
         <div className="zhihu-hot-list">
           {items.map((item, index) => (

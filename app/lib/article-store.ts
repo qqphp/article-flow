@@ -149,6 +149,67 @@ export async function readLatestArticle() {
   return row?.id ? readArticle(row.id) : null;
 }
 
+export type RecentArticleCard = {
+  articleId: string;
+  title: string;
+  style: string;
+  status: string;
+  coverUrl: string | null;
+  wordCount: number;
+  imageCount: number;
+  createdAt: string;
+};
+
+async function pathExists(filePath?: string | null) {
+  if (!filePath) return false;
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function listRecentArticles(limit = 3): Promise<RecentArticleCard[]> {
+  const safeLimit = Math.min(12, Math.max(1, Math.round(limit) || 3));
+  const rows = getDatabase().prepare(`
+    SELECT id, title, style, cover_image_url, cover_path, paragraph_image_urls, paragraph_image_plans,
+           humanized_markdown_path, markdown_path, created_at
+    FROM articles
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(Math.max(safeLimit * 4, 12)) as ArticleRecord[];
+
+  const cards: RecentArticleCard[] = [];
+  for (const article of rows) {
+    if (cards.length >= safeLimit) break;
+    const preferredPath = (article.humanized_markdown_path && await pathExists(article.humanized_markdown_path))
+      ? article.humanized_markdown_path
+      : article.markdown_path;
+    const markdown = await readOptionalFile(preferredPath);
+    if (!markdown) continue;
+    const content = markdownBody(markdown, article.title);
+    const paragraphUrls = parseJsonArray(article.paragraph_image_urls);
+    const paragraphPlans = parseParagraphImagePlans(article.paragraph_image_plans);
+    const paragraphCount = paragraphUrls.length || paragraphPlans.filter((image) => Boolean(image.url)).length;
+    const hasCoverFile = await pathExists(article.cover_path);
+    const coverUrl = hasCoverFile ? (article.cover_image_url || null) : null;
+    const imageCount = (coverUrl ? 1 : 0) + paragraphCount;
+    const status = imageCount > 0 ? "已配图" : article.humanized_markdown_path ? "已去痕" : "已生成";
+    cards.push({
+      articleId: article.id,
+      title: article.title,
+      style: article.style,
+      status,
+      coverUrl,
+      wordCount: content.replace(/\s+/g, "").length,
+      imageCount,
+      createdAt: article.created_at,
+    });
+  }
+  return cards;
+}
+
 export async function readArticleSource(articleId: string, preferHumanized = true) {
   const article = getArticleRecord(articleId);
   if (!article) return null;

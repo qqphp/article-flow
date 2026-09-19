@@ -40,6 +40,13 @@ export function getDatabase() {
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS articles_created_at_idx ON articles(created_at DESC);
+  CREATE TABLE IF NOT EXISTS zhihu_hot_list_cache (
+    limit_count INTEGER PRIMARY KEY,
+    total INTEGER NOT NULL,
+    items_json TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS zhihu_hot_list_cache_fetched_at_idx ON zhihu_hot_list_cache(fetched_at DESC);
   `);
   const articleColumns = new Set((database.prepare("PRAGMA table_info(articles)").all() as Array<{ name: string }>).map((column) => column.name));
   const migrations = [
