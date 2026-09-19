@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import MarkdownIt from "markdown-it";
-import { getArticleCoverPath, readPublishMarkdown } from "../../lib/article-store";
+import { getArticleCoverPath, markArticlePublished, readPublishMarkdown } from "../../lib/article-store";
 import { appendRequestLog } from "../../lib/request-log";
+import { getAppConfig } from "../../lib/config-store";
 
 function markdownToWechatHtml(markdown: string) {
   const parser = new MarkdownIt({ html: false, linkify: true, typographer: true });
@@ -87,14 +88,16 @@ async function uploadContentImages(html: string, markdownPath: string, articleDi
 }
 
 export async function POST(request: Request) {
-  const { platform = "wechat", title, articleId, config } = await request.json();
+  const { platform = "wechat", title, articleId } = await request.json();
   if (!title?.trim() || !articleId) return NextResponse.json({ error: "标题和文章存档不能为空" }, { status: 400 });
-  if (platform !== "wechat") return NextResponse.json({ error: "当前仅支持微信公众号自动创建草稿，其它平台可在发布中心手动导出" }, { status: 400 });
+  if (platform !== "wechat") return NextResponse.json({ error: "当前仅支持微信公众号发布" }, { status: 400 });
   const source = await readPublishMarkdown(articleId);
   if (!source?.content.trim()) return NextResponse.json({ error: "文章 Markdown 文件不存在或内容为空" }, { status: 404 });
-  const appid = config?.wechatAppId || process.env.WECHAT_APPID;
-  const secret = config?.wechatSecret || process.env.WECHAT_SECRET;
-  if (!appid || !secret) return NextResponse.json({ demo: true, message: "未配置微信公众号凭证，已保存到本地发布队列" });
+  if (source.article.publish_status === "已发布") return NextResponse.json({ error: "这篇文章已发布" }, { status: 409 });
+  const config = getAppConfig();
+  const appid = config.wechatAppId;
+  const secret = config.wechatSecret;
+  if (!appid || !secret) return NextResponse.json({ demo: true, message: "未配置微信公众号凭证，文章仍保持未发布状态" });
   const coverPath = getArticleCoverPath(articleId);
   if (!coverPath) return NextResponse.json({ error: "微信公众号草稿需要本地封面图，请先生成封面" }, { status: 400 });
 
@@ -111,7 +114,7 @@ export async function POST(request: Request) {
     const draftBody = {
       articles: [{
         title,
-        author: config?.wechatAuthor || process.env.WECHAT_AUTHOR || "",
+        author: config.wechatAuthor,
         content,
         thumb_media_id: thumbMediaId,
         need_open_comment: 1,
@@ -127,7 +130,8 @@ export async function POST(request: Request) {
     });
     const draftData = await draftResponse.json();
     if (!draftResponse.ok || !draftData.media_id) throw new Error(draftData.errmsg || "创建草稿失败");
-    if (config?.wechatAutoPublish === "true" || process.env.WECHAT_AUTO_PUBLISH === "true") {
+    if (!markArticlePublished(articleId)) throw new Error("文章发布状态已变化，请刷新文章队列");
+    if (config.wechatAutoPublish === "true") {
       await appendRequestLog({ type: "text", operation: "微信公众号发布", endpoint: "https://api.weixin.qq.com/cgi-bin/freepublish/submit", model: "微信公众号", requestBody: { media_id: draftData.media_id } });
       const publishResponse = await fetch(`https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${encodeURIComponent(tokenData.access_token)}`, {
         method: "POST",

@@ -9,9 +9,8 @@ export async function POST(request: Request) {
     query?: string;
     count?: number;
     sortBy?: string;
-    config?: { zhihuAccessSecret?: string };
   };
-  const secret = resolveZhihuSecret(body.config);
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   const query = body.query?.trim();
   if (!query) return NextResponse.json({ error: "请输入搜索关键词" }, { status: 400 });

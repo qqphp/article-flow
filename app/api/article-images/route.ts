@@ -4,17 +4,17 @@ import { generateImage } from "../../lib/image-generation";
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
+import { AppConfig, getAppConfig } from "../../lib/config-store";
 
-type Config = Record<string, string | undefined>;
 type ImagePlan = { prompt: string; anchor: string };
 type ImageTarget = { type: "cover" } | { type: "paragraph"; index: number };
 
-async function createParagraphPrompts(title: string, content: string, config?: Config) {
-  const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
-  const baseUrl = config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL;
+async function createParagraphPrompts(title: string, content: string, config: AppConfig) {
+  const apiKey = config.textKey;
+  const baseUrl = config.textBase;
   if (!apiKey || !baseUrl) throw new Error("请先在配置中心填写文本模型的地址和密钥");
   const requestBody = {
-    model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-5-mini",
+    model: config.textModel || "gpt-5-mini",
     store: false,
     max_output_tokens: 1200,
     input: [
@@ -41,9 +41,9 @@ async function createParagraphPrompts(title: string, content: string, config?: C
   return { images, demo: false };
 }
 
-async function generateAndSaveImage(articleId: string, prompt: string, size: string, name: string, operation: string, config?: Config) {
+async function generateAndSaveImage(articleId: string, prompt: string, size: string, name: string, operation: string) {
   try {
-    const image = await generateImage({ prompt, size, config, operation });
+    const image = await generateImage({ prompt, size, operation });
     if (!image.url) throw new Error("图片服务未返回地址");
     const filePath = await saveArticleImage(articleId, image.url, name);
     if (!filePath) throw new Error("无法保存本地图片");
@@ -54,12 +54,13 @@ async function generateAndSaveImage(articleId: string, prompt: string, size: str
 }
 
 export async function POST(request: Request) {
-  const { title: requestedTitle, config, articleId, mode = "all", target } = await request.json() as { title?: string; config?: Config; articleId?: string; mode?: "all" | "single"; target?: ImageTarget };
+  const { title: requestedTitle, articleId, mode = "all", target } = await request.json() as { title?: string; articleId?: string; mode?: "all" | "single"; target?: ImageTarget };
   if (!articleId) return NextResponse.json({ error: "缺少文章存档，无法保存本地图片" }, { status: 400 });
   const source = await readArticleSource(articleId, true);
   if (!source?.content.trim()) return NextResponse.json({ error: "文章 Markdown 文件不存在或内容为空" }, { status: 404 });
   const title = requestedTitle?.trim() || source.article.title;
   const content = source.content;
+  const config = getAppConfig();
   try {
     let cover: CoverImage;
     let paragraphImages: ParagraphImage[];
@@ -70,11 +71,11 @@ export async function POST(request: Request) {
       cover = imageState.cover;
       paragraphImages = imageState.paragraphImages;
       if (target.type === "cover") {
-        const result = await generateAndSaveImage(articleId, cover.prompt, "1536x1024", "cover", "重新生成文章封面", config);
+        const result = await generateAndSaveImage(articleId, cover.prompt, "1536x1024", "cover", "重新生成文章封面");
         cover = "error" in result ? { ...cover, error: result.error } : { prompt: cover.prompt, ...result };
       } else if (Number.isInteger(target.index) && target.index >= 0 && target.index < paragraphImages.length) {
         const current = paragraphImages[target.index];
-        const result = await generateAndSaveImage(articleId, current.prompt, "1024x1024", `paragraph-${target.index + 1}`, `重新生成段落配图 ${target.index + 1}`, config);
+        const result = await generateAndSaveImage(articleId, current.prompt, "1024x1024", `paragraph-${target.index + 1}`, `重新生成段落配图 ${target.index + 1}`);
         paragraphImages[target.index] = "error" in result ? { ...current, error: result.error } : { prompt: current.prompt, anchor: current.anchor, ...result };
       } else {
         return NextResponse.json({ error: "段落配图不存在" }, { status: 400 });
@@ -86,8 +87,8 @@ export async function POST(request: Request) {
       paragraphImages = promptResult.images.map(({ prompt, anchor }) => ({ prompt, anchor }));
       await beginArticleImageGeneration(articleId, coverPrompt, paragraphImages);
       const [coverResult, paragraphResults] = await Promise.all([
-        generateAndSaveImage(articleId, coverPrompt, "1536x1024", "cover", "生成文章封面", config),
-        Promise.all(paragraphImages.map((image, index) => generateAndSaveImage(articleId, image.prompt, "1024x1024", `paragraph-${index + 1}`, `生成段落配图 ${index + 1}`, config))),
+        generateAndSaveImage(articleId, coverPrompt, "1536x1024", "cover", "生成文章封面"),
+        Promise.all(paragraphImages.map((image, index) => generateAndSaveImage(articleId, image.prompt, "1024x1024", `paragraph-${index + 1}`, `生成段落配图 ${index + 1}`))),
       ]);
       cover = { prompt: coverPrompt, ...coverResult };
       paragraphImages = paragraphImages.map((image, index) => ({ ...image, ...paragraphResults[index] }));

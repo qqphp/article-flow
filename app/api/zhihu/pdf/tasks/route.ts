@@ -5,8 +5,8 @@ import { createPdfParseTask, resolveZhihuSecret, ZHIHU_ENDPOINTS, zhihuErrorPayl
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({})) as { fileId?: string; idempotencyKey?: string; config?: { zhihuAccessSecret?: string } };
-  const secret = resolveZhihuSecret(body.config);
+  const body = await request.json().catch(() => ({})) as { fileId?: string; idempotencyKey?: string };
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   const fileId = body.fileId?.trim();
   if (!fileId) return NextResponse.json({ error: "缺少 file_id，请先上传 PDF" }, { status: 400 });

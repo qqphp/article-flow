@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Check, ChevronRight, CircleHelp, Clock3, Eye, FileText, Flame, Image as ImageIcon, KeyRound, LayoutDashboard, Link2, Menu, MoreHorizontal, PenLine, Play, Plus, RefreshCw, Rocket, Search, Send, Settings2, Sparkles, Trash2, Wand2, X, Youtube, Zap, ScrollText } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BookOpen, Bot, Check, ChevronRight, CircleHelp, Clock3, Eye, FileText, Flame, Image as ImageIcon, KeyRound, LayoutDashboard, Link2, Menu, MoreHorizontal, PenLine, Play, Plus, RefreshCw, Rocket, Search, Send, Settings2, Sparkles, Trash2, Wand2, X, Zap, ScrollText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ZhihuDataPage from "./zhihu-data-page";
@@ -25,7 +25,7 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [usage, setUsage] = useState<{ percent: number; remaining?: number; resetAt?: string; unavailable?: boolean; amount?: number } | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
-  const notify = (message: string) => { setToast(message); setTimeout(() => setToast(""), 2400); };
+  const notify = useCallback((message: string) => { setToast(message); setTimeout(() => setToast(""), 2400); }, []);
   useEffect(() => {
     fetch("/api/billing/balance").then(async (response) => {
       const data = await response.json();
@@ -50,10 +50,37 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    const syncQueue = () => { try { setPendingCount(JSON.parse(localStorage.getItem("article-flow-queue") || "[]").filter((item: any) => item.status !== "已暂停").length); } catch { setPendingCount(0); } };
-    syncQueue(); window.addEventListener("article-flow-queue-updated", syncQueue); return () => window.removeEventListener("article-flow-queue-updated", syncQueue);
+    if (generated && article?.articleId) window.dispatchEvent(new Event("article-flow-articles-updated"));
+  }, [article?.articleId, generated]);
+  useEffect(() => {
+    const syncPendingCount = async () => {
+      try {
+        const response = await fetch("/api/articles?summary=1");
+        const data = await response.json();
+        setPendingCount(response.ok ? Number(data.stats?.pending || 0) : 0);
+      } catch { setPendingCount(0); }
+    };
+    void syncPendingCount();
+    window.addEventListener("article-flow-articles-updated", syncPendingCount);
+    return () => window.removeEventListener("article-flow-articles-updated", syncPendingCount);
   }, []);
-  const start = async () => { setRunning(true); setHumanized(false); setImages(false); setGenerated(false); setArticle(null); try { let config = {}; try { config = JSON.parse(localStorage.getItem("article-flow-config") || "{}"); } catch { /* ignore malformed local data */ } const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, style, search: searchOn, config }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "生成失败"); if (typeof data.content !== "string" || !data.content.trim()) throw new Error("AI 返回的文章内容为空"); setArticle(data); setGenerated(true); notify(data.demo ? "已生成演示初稿（配置模型后可生成真实内容）" : "文章初稿已生成"); } catch (error: any) { notify(error.message || "生成失败，请稍后重试"); } finally { setRunning(false); } };
+  const start = async () => { setRunning(true); setHumanized(false); setImages(false); setGenerated(false); setArticle(null); try { const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, style, search: searchOn }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "生成失败"); if (typeof data.content !== "string" || !data.content.trim()) throw new Error("AI 返回的文章内容为空"); setArticle(data); setGenerated(true); notify(data.demo ? "已生成演示初稿（配置模型后可生成真实内容）" : "文章初稿已生成"); } catch (error: any) { notify(error.message || "生成失败，请稍后重试"); } finally { setRunning(false); } };
+  const openArticleForPublish = async (articleId: string) => {
+    try {
+      const response = await fetch(`/api/articles/${encodeURIComponent(articleId)}`);
+      const data = await response.json();
+      if (!response.ok || !data.article) throw new Error(data.error || "文章加载失败");
+      if (data.article.publishStatus !== "未发布") throw new Error("这篇文章已发布，请刷新文章队列");
+      setArticle(data.article);
+      setTopic(data.article.topic || topic);
+      setStyle(data.article.style || style);
+      setGenerated(true);
+      setHumanized(Boolean(data.article.humanizedContent));
+      setImages(Boolean(data.article.layoutContent || data.article.imageUrl || data.article.paragraphImages?.length));
+      setNav("write");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error: any) { notify(error.message || "文章加载失败"); }
+  };
   const navItems: [NavKey, React.ReactNode, string][] = [["overview", <LayoutDashboard size={18}/>, "工作台"], ["write", <PenLine size={18}/>, "写文章"], ["assets", <ImageIcon size={18}/>, "素材库"], ["publish", <Send size={18}/>, "发布中心"], ["zhihu-data", <Flame size={18}/>, "知乎数据"], ["request-logs", <ScrollText size={18}/>, "请求日志"], ["settings", <Settings2 size={18}/>, "配置中心"]];
 
   return <main className="shell">
@@ -64,8 +91,8 @@ export default function Home() {
       <div className="side-bottom"><div className="usage"><div className="usage-head"><span>本月使用量</span><b>{!usage ? "查询中" : usage.unavailable ? "暂不可用" : usage.amount !== undefined ? usage.amount.toLocaleString() : `${usage.percent}%`}</b></div><div className="progress"><span style={{ width: `${usage?.percent ?? 0}%` }} /></div><small>{!usage ? "正在查询模型账户" : usage.unavailable ? "余额接口暂未返回数据" : usage.amount !== undefined ? "来自模型服务月度用量接口" : `剩余 ${usage.remaining ?? "--"} · ${usage.resetAt ? `重置于 ${usage.resetAt}` : "按接口返回"}`}</small></div><button className="help"><CircleHelp size={17}/> 使用帮助 <span>?</span></button><div className="user-row"><div className="avatar soft">阿</div><div><b>开发阿雷</b><small>Pro 计划</small></div><MoreHorizontal size={17}/></div></div>
     </aside>
     <section className="content">
-      <header className="topbar"><div className="crumb"><button className="mobile-menu"><Menu size={20}/></button><span>{nav === "settings" ? "配置中心" : nav === "write" ? "写文章" : nav === "request-logs" ? "请求日志" : nav === "zhihu-data" ? "知乎数据" : "工作台"}</span><ChevronRight size={14}/><b>{nav === "overview" ? "概览" : nav === "write" ? "新建文章" : nav === "settings" ? "AI 与平台配置" : nav === "request-logs" ? "API 调用记录" : nav === "zhihu-data" ? "开放平台数据" : "全部内容"}</b></div><div className="top-actions"><button className="icon-btn"><Search size={18}/></button><button className="new-btn" onClick={() => { setNav("write"); window.scrollTo({ top: 0, behavior: "smooth" }); }}><Plus size={17}/> 新建文章</button></div></header>
-      {nav === "settings" ? <SettingsPage notify={notify}/> : nav === "write" ? <WritePage topic={topic} setTopic={setTopic} style={style} setStyle={setStyle} searchOn={searchOn} setSearchOn={setSearchOn} running={running} start={start} generated={generated} humanized={humanized} setHumanized={setHumanized} images={images} setImages={setImages} article={article} setArticle={setArticle} notify={notify}/> : nav === "assets" ? <AssetsPage notify={notify}/> : nav === "publish" ? <PublishPage notify={notify}/> : nav === "zhihu-data" ? <ZhihuDataPage notify={notify} onOpenSettings={() => setNav("settings")}/> : nav === "request-logs" ? <RequestLogsPage/> : <Dashboard onWrite={() => setNav("write")} notify={notify}/>} 
+      <header className="topbar"><div className="crumb"><button className="mobile-menu"><Menu size={20}/></button><span>{nav === "settings" ? "配置中心" : nav === "write" ? "写文章" : nav === "publish" ? "发布中心" : nav === "request-logs" ? "请求日志" : nav === "zhihu-data" ? "知乎数据" : "工作台"}</span><ChevronRight size={14}/><b>{nav === "overview" ? "概览" : nav === "write" ? "新建文章" : nav === "publish" ? "文章队列" : nav === "settings" ? "AI 与平台配置" : nav === "request-logs" ? "API 调用记录" : nav === "zhihu-data" ? "开放平台数据" : "全部内容"}</b></div><div className="top-actions"><button className="icon-btn"><Search size={18}/></button><button className="new-btn" onClick={() => { setNav("write"); window.scrollTo({ top: 0, behavior: "smooth" }); }}><Plus size={17}/> 新建文章</button></div></header>
+      {nav === "settings" ? <SettingsPage notify={notify}/> : nav === "write" ? <WritePage topic={topic} setTopic={setTopic} style={style} setStyle={setStyle} searchOn={searchOn} setSearchOn={setSearchOn} running={running} start={start} generated={generated} humanized={humanized} setHumanized={setHumanized} images={images} setImages={setImages} article={article} setArticle={setArticle} notify={notify}/> : nav === "assets" ? <AssetsPage notify={notify}/> : nav === "publish" ? <PublishPage notify={notify} onWrite={() => setNav("write")} onPublishArticle={openArticleForPublish}/> : nav === "zhihu-data" ? <ZhihuDataPage notify={notify} onOpenSettings={() => setNav("settings")}/> : nav === "request-logs" ? <RequestLogsPage/> : <Dashboard onWrite={() => setNav("write")} notify={notify}/>}
     </section>
     {toast && <div className="toast"><Check size={16}/> {toast}</div>}
   </main>;
@@ -108,15 +135,21 @@ function greetingForHour(hour: number) {
 }
 
 function Dashboard({ onWrite, notify }: { onWrite: () => void; notify: (s: string) => void }) {
-  const [queue, setQueue] = useState<Array<{ title: string; status: string; meta?: string; color?: string }>>([]);
+  const [summary, setSummary] = useState<{ totalArticles: number; monthlyArticles: number; cumulativePublished: number } | null>(null);
   const [recent, setRecent] = useState<RecentArticle[]>([]);
   const [recentLoading, setRecentLoading] = useState(true);
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    const sync = () => { try { setQueue(JSON.parse(localStorage.getItem("article-flow-queue") || "[]")); } catch { setQueue([]); } };
-    sync();
-    window.addEventListener("article-flow-queue-updated", sync);
-    return () => window.removeEventListener("article-flow-queue-updated", sync);
+    const loadSummary = async () => {
+      try {
+        const response = await fetch("/api/articles?summary=1");
+        const data = await response.json();
+        setSummary(response.ok ? data.stats || null : null);
+      } catch { setSummary(null); }
+    };
+    void loadSummary();
+    window.addEventListener("article-flow-articles-updated", loadSummary);
+    return () => window.removeEventListener("article-flow-articles-updated", loadSummary);
   }, []);
   useEffect(() => {
     const tick = () => setNow(new Date());
@@ -143,11 +176,10 @@ function Dashboard({ onWrite, notify }: { onWrite: () => void; notify: (s: strin
     // notify is recreated each parent render and should not retrigger recent articles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const published = queue.filter((item) => item.status === "已发布").length;
   const heroDate = now ? formatHeroDate(now) : "今天";
   const heroGreeting = now ? `${greetingForHour(now.getHours())}，开发阿雷` : "你好，开发阿雷";
   return <div className="page"><div className="hero"><div><p className="eyebrow"><span className="live-dot"/> {heroDate}</p><h1>{heroGreeting} <span>👋</span></h1><p className="hero-sub">今天也来写点让人愿意读下去的内容吧。</p></div><button className="primary-btn" onClick={onWrite}><PenLine size={17}/> 开始写作 <ChevronRight size={16}/></button></div>
-    <div className="stats"><Stat icon={<FileText/>} color="purple" label="本月文章" value={`${queue.length}`} delta={queue.length ? "已同步" : "--"}/><Stat icon={<Send/>} color="blue" label="已发布" value={`${published}`} delta={published ? "已同步" : "--"}/><Stat icon={<Zap/>} color="orange" label="节省时间" value={queue.length ? `${(queue.length * 1.8).toFixed(1)}h` : "--"} delta={queue.length ? "估算" : "--"}/><Stat icon={<Clock3/>} color="green" label="平均生成" value="--" delta="等待数据"/></div>
+    <div className="stats"><Stat icon={<FileText/>} color="purple" label="本月文章" value={`${summary?.monthlyArticles || 0}`} delta={summary ? "已同步" : "--"}/><Stat icon={<Send/>} color="blue" label="已发布" value={`${summary?.cumulativePublished || 0}`} delta={summary?.cumulativePublished ? "已同步" : "--"}/><Stat icon={<Zap/>} color="orange" label="节省时间" value={summary?.totalArticles ? `${(summary.totalArticles * 1.8).toFixed(1)}h` : "--"} delta={summary?.totalArticles ? "估算" : "--"}/><Stat icon={<Clock3/>} color="green" label="平均生成" value="--" delta="等待数据"/></div>
     <div className="section-title"><div><h2>最近创作</h2><p>继续你的创作，灵感不会等待。</p></div><button className="text-btn" onClick={onWrite}>新建文章 <ChevronRight size={15}/></button></div>
     {recentLoading ? <div className="empty-state dashboard-empty">正在加载最近创作...</div> : recent.length ? <div className="recent-grid">{recent.map((item, index) => <ArticleCard key={item.articleId} title={item.title} tag={item.style || "未命名风格"} status={item.status} time={formatRelativeTime(item.createdAt)} color={["lavender", "peach", "mint"][index % 3]} coverUrl={item.coverUrl} wordCount={item.wordCount} imageCount={item.imageCount} onClick={onWrite}/>)}</div> : <div className="empty-state dashboard-empty">还没有创作记录，点击“开始写作”创建第一篇文章。</div>}
     <div className="lower"><div className="section-title"><div><h2>创作流程</h2><p>从灵感到发布，一站式完成。</p></div></div><div className="flow-card">{steps.map((s, i) => <div className="flow-step" key={s}><div className={i < 2 ? "flow-icon done" : "flow-icon"}>{i < 2 ? <Check size={16}/> : i === 2 ? <Wand2 size={17}/> : i === 3 ? <ImageIcon size={17}/> : <Rocket size={17}/>}</div><b>{s}</b>{i < steps.length - 1 && <div className={i < 1 ? "flow-line done" : "flow-line"}/>}</div>)}</div></div>
@@ -192,14 +224,54 @@ function AssetsPage({ notify }: { notify: (s: string) => void }) {
   return <div className="page"><div className="page-heading"><div><p className="eyebrow">内容资产</p><h1>素材库</h1><p className="hero-sub">统一管理文章封面、段落插图和上传素材。</p></div><><input ref={inputRef} type="file" accept="image/*" multiple hidden onChange={(event) => onFiles(event.target.files)}/><button className="primary-btn" onClick={() => inputRef.current?.click()}><Plus size={17}/> 上传素材</button></></div><div className="asset-toolbar"><div className="asset-tabs">{(["全部", "封面图", "段落配图"] as const).map((name) => <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>{name} <b>{name === "全部" ? assets.length : assets.filter((asset) => asset.type === name).length}</b></button>)}</div><label className="filter-btn"><Search size={15}/><input aria-label="搜索素材" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材"/></label></div><div className="asset-grid">{filtered.map((asset) => <div className="asset-card" key={`${asset.name}-${asset.url || "seed"}`}><div className={`asset-thumb ${asset.color}`}>{asset.url ? <img src={asset.url} alt={asset.name}/> : <><div className="cover-orb"/><ImageIcon size={20}/></>}</div><div className="asset-info"><b>{asset.name}</b><small>{asset.type} · {asset.size}</small></div><button className="asset-use" onClick={() => notify(asset.url ? "素材已就绪，可用于文章配图" : `已复制 ${asset.name} 的使用路径`)}><Link2 size={14}/> 使用</button></div>)}</div>{filtered.length === 0 && <div className="empty-state">没有找到匹配的素材</div>}</div>;
 }
 
-function PublishPage({ notify }: { notify: (s: string) => void }) {
-  const [selected, setSelected] = useState("wechat");
-  const channels = [["wechat", "微信公众号", <BookOpen size={18}/>, "已配置"], ["xiaohongshu", "小红书", <PenLine size={18}/>, "未配置"], ["zhihu", "知乎", <FileText size={18}/>, "未配置"]] as const;
-  const [queue, setQueue] = useState<Array<{ id: string; title: string; status: string; meta: string; color: string }>>([]);
-  useEffect(() => { try { setQueue(JSON.parse(localStorage.getItem("article-flow-queue") || "[]")); } catch { setQueue([]); } }, []);
-  const refresh = () => { try { setQueue(JSON.parse(localStorage.getItem("article-flow-queue") || "[]")); } catch { /* ignore malformed local data */ } notify(`${selected === "wechat" ? "微信公众号" : "当前渠道"}发布队列已刷新`); };
-  const pause = (id: string) => { const next = queue.map((item) => item.id === id ? { ...item, status: "已暂停" } : item); setQueue(next); localStorage.setItem("article-flow-queue", JSON.stringify(next)); window.dispatchEvent(new Event("article-flow-queue-updated")); notify("已暂停发布任务"); };
-  return <div className="page"><div className="page-heading"><div><p className="eyebrow">内容分发</p><h1>发布中心</h1><p className="hero-sub">选择平台，管理草稿和发布状态。</p></div><button className="primary-btn" onClick={() => notify("请先在写作页生成文章") }><Send size={17}/> 新建发布</button></div><div className="publish-stats"><div><small>待处理</small><strong>{queue.filter((item) => item.status !== "已暂停").length}</strong></div><div><small>本月已发布</small><strong>{queue.filter((item) => item.status === "已发布").length}</strong></div><div><small>成功率</small><strong>{queue.length ? "100%" : "--"}</strong></div></div><div className="publish-layout"><div className="channel-panel panel"><h2>发布渠道</h2><p>选择一个平台查看队列。</p>{channels.map(([id, name, icon, status]) => <button className={selected === id ? "channel-row active" : "channel-row"} onClick={() => setSelected(id)} key={id}>{icon}<span><b>{name}</b><small>{status}</small></span><ChevronRight size={15}/></button>)}</div><div className="panel queue-panel"><div className="panel-title"><div><h2>待发布队列</h2><p>共 {queue.length} 篇内容等待处理</p></div><button className="filter-btn" onClick={refresh}><Clock3 size={14}/> 最近更新</button></div>{queue.length === 0 ? <div className="empty-state">暂无发布任务，去写文章生成内容后发布。</div> : queue.map((item) => <div className="queue-item" key={item.id}><div className={`queue-cover ${item.color}`}><div className="cover-orb"/></div><div className="queue-info"><span className={`pill ${item.status === "已发布" ? "success" : item.status === "已暂停" ? "warning" : "pending"}`}>{item.status}</span><b>{item.title}</b><small>{item.meta}</small></div><button className="queue-action" onClick={() => pause(item.id)} disabled={item.status === "已暂停"}>{item.status === "已暂停" ? "已暂停" : "暂停"}</button></div>)}<button className="wide-outline" onClick={refresh}><RefreshCw size={15}/> 刷新发布状态</button></div></div></div>;
+type QueueArticle = { articleId: string; title: string; style: string; publishStatus: "未发布" | "已发布"; coverUrl: string | null; createdAt: string };
+type PublishStats = { cumulativePublished: number; monthlyPublished: number; weeklyPublished: number; todayPublished: number; pending: number };
+
+function formatArticleCreatedAt(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString("zh-CN", { hour12: false }) : "--";
+}
+
+function PublishPage({ notify, onWrite, onPublishArticle }: { notify: (s: string) => void; onWrite: () => void; onPublishArticle: (articleId: string) => void }) {
+  const [articles, setArticles] = useState<QueueArticle[]>([]);
+  const [stats, setStats] = useState<PublishStats>({ cumulativePublished: 0, monthlyPublished: 0, weeklyPublished: 0, todayPublished: 0, pending: 0 });
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const loadPage = async (targetPage = page) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/articles?queue=1&page=${targetPage}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "文章队列加载失败");
+      setArticles(Array.isArray(data.articles) ? data.articles : []);
+      setStats(data.stats || { cumulativePublished: 0, monthlyPublished: 0, weeklyPublished: 0, todayPublished: 0, pending: 0 });
+      setPage(Number(data.page || 1));
+      setTotal(Number(data.total || 0));
+      setTotalPages(Number(data.totalPages || 1));
+    } catch (error: any) {
+      setArticles([]);
+      notify(error.message || "文章队列加载失败");
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void loadPage(1); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const removeArticle = async (article: QueueArticle) => {
+    if (deletingId || !window.confirm(`确定删除“${article.title}”吗？文章记录及 data 目录会一并删除。`)) return;
+    setDeletingId(article.articleId);
+    try {
+      const response = await fetch(`/api/articles/${encodeURIComponent(article.articleId)}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "删除文章失败");
+      window.dispatchEvent(new Event("article-flow-articles-updated"));
+      await loadPage(page);
+      notify("文章已删除");
+    } catch (error: any) { notify(error.message || "删除文章失败"); } finally { setDeletingId(null); }
+  };
+  const statItems = [["累积发布", stats.cumulativePublished], ["本月发布", stats.monthlyPublished], ["本周发布", stats.weeklyPublished], ["今日发布", stats.todayPublished], ["待发布", stats.pending]];
+  return <div className="page"><div className="page-heading"><div><p className="eyebrow">内容分发</p><h1>发布中心</h1><p className="hero-sub">管理微信公众号文章队列与发布状态。</p></div><button className="primary-btn" onClick={onWrite}><Send size={17}/> 新建发布</button></div><div className="publish-stats">{statItems.map(([label, value]) => <div key={label as string}><small>{label}</small><strong>{value as number}</strong></div>)}</div><div className="publish-layout"><div className="channel-panel panel"><h2>发布渠道</h2><p>当前仅支持微信公众号。</p><div className="channel-row active"><BookOpen size={18}/><span><b>微信公众号</b><small>文章草稿发布</small></span></div></div><div className="panel queue-panel"><div className="panel-title"><div><h2>文章队列</h2><p>按创建时间倒序 · 共 {total} 篇文章</p></div><button className="filter-btn" onClick={() => void loadPage(page)} disabled={loading}><RefreshCw size={14}/> 刷新</button></div>{loading ? <div className="empty-state">正在加载文章队列...</div> : articles.length === 0 ? <div className="empty-state">暂无文章，去写文章生成内容后发布。</div> : articles.map((article, index) => <div className="queue-item article-queue-item" key={article.articleId}><div className={`queue-cover ${article.coverUrl ? "has-image" : ["lavender", "peach", "mint", "blue"][index % 4]}`}>{article.coverUrl ? <img src={article.coverUrl} alt=""/> : <div className="cover-orb"/>}</div><div className="queue-info"><span className={`pill ${article.publishStatus === "已发布" ? "success" : "pending"}`}>{article.publishStatus}</span><b>{article.title}</b><small>{article.style} · 创建于 {formatArticleCreatedAt(article.createdAt)}</small></div><div className="queue-actions">{article.publishStatus === "未发布" && <button className="queue-action" onClick={() => onPublishArticle(article.articleId)}>发布</button>}<button className="queue-delete" onClick={() => void removeArticle(article)} disabled={deletingId === article.articleId}>{deletingId === article.articleId ? "删除中..." : <><Trash2 size={14}/> 删除</>}</button></div></div>)}<div className="pagination queue-pagination"><span>第 {page} / {totalPages} 页</span><button disabled={loading || page <= 1} onClick={() => void loadPage(page - 1)}>上一页</button><button disabled={loading || page >= totalPages} onClick={() => void loadPage(page + 1)}>下一页</button></div></div></div></div>;
 }
 
 function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, running, start, generated, humanized, setHumanized, images, setImages, article, setArticle, notify }: any) {
@@ -221,13 +293,12 @@ function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, ru
   useEffect(() => {
     if (generated && article?.content && !humanized) { setPreviewTab("article"); setViewMode("rendered"); }
   }, [article?.content, article?.title, generated, humanized]);
-  const getConfig = () => { try { return JSON.parse(localStorage.getItem("article-flow-config") || "{}"); } catch { return {}; } };
   const finishOperation = () => { setProgress(100); window.setTimeout(() => { setOperation(null); setProgress(0); }, 550); };
   const handleHumanize = async () => {
     if (!article?.content || operation || running) return;
     setOperation("humanize"); setProgress(8);
     try {
-      const response = await fetch("/api/humanize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ articleId: article.articleId, config: getConfig() }) });
+      const response = await fetch("/api/humanize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ articleId: article.articleId }) });
       const data = await response.json();
       if (!response.ok || !data.article?.humanizedContent?.trim()) throw new Error(data.error || "去痕失败");
       setArticle({ ...data.article, selectedTitle: article.selectedTitle }); setHumanized(true); setImages(false); setPreviewTab("humanized");
@@ -238,7 +309,7 @@ function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, ru
     if (operation || running) return;
     setOperation("images"); setProgress(8);
     try {
-      const response = await fetch("/api/article-images", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: displayTitle, articleId: article?.articleId, config: getConfig(), mode: target ? "single" : "all", target }) });
+      const response = await fetch("/api/article-images", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: displayTitle, articleId: article?.articleId, mode: target ? "single" : "all", target }) });
       const data = await response.json();
       if (!response.ok || !data.article) throw new Error(data.error || "配图失败");
       setArticle({ ...data.article, selectedTitle: article.selectedTitle }); setImages(true); setPreviewTab(data.failed ? "images" : "layout");
@@ -249,9 +320,11 @@ function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, ru
     if (!article || operation || running) return;
     setOperation("publish"); setProgress(8);
     try {
-      const response = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platform: "wechat", title: displayTitle, articleId: article.articleId, config: getConfig() }) });
+      const response = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platform: "wechat", title: displayTitle, articleId: article.articleId }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || "发布失败");
-      const queue = JSON.parse(localStorage.getItem("article-flow-queue") || "[]"); queue.unshift({ id: `${Date.now()}`, title: displayTitle, status: data.demo ? "草稿" : "已发布", meta: `${style} · ${(displayContent || "").length.toLocaleString()} 字`, color: "lavender" }); localStorage.setItem("article-flow-queue", JSON.stringify(queue.slice(0, 20))); window.dispatchEvent(new Event("article-flow-queue-updated")); notify(data.message || "已加入发布队列");
+      setArticle({ ...article, publishStatus: "已发布", publishedAt: new Date().toISOString() });
+      window.dispatchEvent(new Event("article-flow-articles-updated"));
+      notify(data.message || "微信公众号草稿创建成功");
     } catch (error: any) { notify(error.message || "发布失败，请检查配置"); } finally { finishOperation(); }
   };
   const normalizeMarkdown = (content: string) => content.replace(/\\(\*{1,3}|_{1,3}|~{2}|`|\[|\]|\(|\))/g, "$1").replace(/\*\*\s*([^*\n]*?\S)\s*\*\*/g, "**$1**").replace(/(\*\*[^*\n]+\*\*)(?=[\u3400-\u9fff])/g, "$1\ufeff").replace(/\r\n/g, "\n");
@@ -303,15 +376,36 @@ function RequestLogsPage() {
 function SettingsPage({ notify }: { notify: (s:string)=>void }) {
   const [tab, setTab] = useState<"ai" | "platform">("ai");
   const [saved, setSaved] = useState<Record<string, string>>({});
+  const [configured, setConfigured] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false);
   const [models, setModels] = useState<{ text: string[]; image: string[] }>({ text: [], image: [] });
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState({ text: false, image: false });
   const [loadingModels, setLoadingModels] = useState<"text" | "image" | null>(null);
-  useEffect(() => { try { setSaved(JSON.parse(localStorage.getItem("article-flow-config") || "{}")); } catch { setSaved({}); } }, []);
+  const loadConfig = async () => {
+    const response = await fetch("/api/config", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "加载配置失败");
+    setSaved(data.values || {});
+    setConfigured(data.configured || {});
+  };
+  useEffect(() => { void (async () => {
+    try {
+      const legacy = JSON.parse(localStorage.getItem("article-flow-config") || "{}") as unknown;
+      if (legacy && typeof legacy === "object" && !Array.isArray(legacy) && Object.keys(legacy as object).length) {
+        const migrated = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: legacy, mode: "fill-missing" }) });
+        if (!migrated.ok) throw new Error("旧配置迁移失败");
+        localStorage.removeItem("article-flow-config");
+      }
+      await loadConfig();
+    } catch {
+      notify("旧配置迁移失败，请稍后重试，原配置仍保留");
+    }
+  })(); }, [notify]);
   const save = (key: string, value: string) => setSaved((current) => ({ ...current, [key]: value }));
-  const persist = () => { localStorage.setItem("article-flow-config", JSON.stringify(saved)); notify("配置已保存到当前浏览器"); };
-  const value = (key: string, fallback: string) => saved[key] || fallback;
-  const modelValue = (key: string, fallback: string) => Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback;
-  const test = async (label: string) => { if (label === "Firecrawl") { notify("Firecrawl 配置已填写，可保存后使用"); return; } if (label === "知乎数据") { try { const response = await fetch("/api/zhihu/quota", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: { zhihuAccessSecret: value("zhihuAccessSecret", "") } }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "连接失败"); notify("知乎数据连接正常"); } catch (error: any) { notify(error.message || "知乎数据连接失败，请检查密钥"); } return; } const type = label === "图片模型" ? "image" : "text"; const baseUrl = type === "text" ? value("textBase", "") : value("imageUrl", ""); const apiKey = type === "text" ? value("textKey", "") : value("imageKey", ""); try { const response = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, baseUrl, apiKey }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "连接失败"); notify(`${label}连接正常`); } catch (error: any) { notify(error.message || `${label}连接失败，请检查地址和密钥`); } };
+  const persist = async () => { setSaving(true); try { const response = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: saved }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "保存配置失败"); await loadConfig(); notify("配置已保存到本地数据库"); } catch (error: any) { notify(error.message || "保存配置失败"); } finally { setSaving(false); } };
+  const value = (key: string, fallback: string) => saved[key] ?? fallback;
+  const modelValue = (key: string, fallback: string) => saved[key] ?? fallback;
+  const test = async (label: string) => { if (label === "Firecrawl") { notify(configured.firecrawlKey || saved.firecrawlKey ? "Firecrawl 已配置，生成文章时将使用该密钥" : "请先填写并保存 Firecrawl API Key"); return; } if (label === "知乎数据") { try { if (saved.zhihuAccessSecret) throw new Error("请先保存新的知乎密钥后再测试"); const response = await fetch("/api/zhihu/quota", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "连接失败"); notify("知乎数据连接正常"); } catch (error: any) { notify(error.message || "知乎数据连接失败，请检查密钥"); } return; } const type = label === "图片模型" ? "image" : "text"; const baseUrl = type === "text" ? value("textBase", "") : value("imageUrl", ""); const apiKey = type === "text" ? value("textKey", "") : value("imageKey", ""); try { const response = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, baseUrl, apiKey }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "连接失败"); notify(`${label}连接正常`); } catch (error: any) { notify(error.message || `${label}连接失败，请检查地址和密钥`); } };
   const getModels = async (type: "text" | "image") => { const baseUrl = type === "text" ? value("textBase", "") : value("imageUrl", ""); const apiKey = type === "text" ? value("textKey", "") : value("imageKey", ""); setLoadingModels(type); try { const response = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, baseUrl, apiKey }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "获取模型失败"); setModels((current) => ({ ...current, [type]: data.models || [] })); setModelOptionsLoaded((current) => ({ ...current, [type]: true })); notify(data.models?.length ? `已获取 ${data.models.length} 个${type === "text" ? "文本" : "图片"}模型` : "服务未返回可用模型"); } catch (error: any) { notify(error.message || "获取模型失败"); } finally { setLoadingModels(null); } };
   const modelSelector = (type: "text" | "image", key: string, fallback: string) => {
     const currentValue = modelValue(key, fallback);
@@ -319,20 +413,31 @@ function SettingsPage({ notify }: { notify: (s:string)=>void }) {
     const options = Array.from(new Set([currentValue, ...models[type]].filter(Boolean)));
     return <select value={currentValue} onChange={(event) => save(key, event.target.value)}><option value="">请选择模型</option>{options.map((model) => <option key={model} value={model}>{model}</option>)}</select>;
   };
-  return <div className="page settings-page"><div className="page-heading"><div><p className="eyebrow">配置中心</p><h1>让墨稿更懂你的工作流</h1><p className="hero-sub">配置模型与发布平台，所有密钥仅保存在本地。</p></div><button className="save-btn" onClick={persist}><Check size={16}/> 保存配置</button></div><div className="settings-tabs"><button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><Bot size={16}/> AI 服务</button><button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}><KeyRound size={16}/> 平台密钥</button></div>{tab === "ai" ? <div className="settings-grid"><div className="panel config-panel"><div className="panel-title"><div><h2>文本模型</h2><p>用于文章生成、去痕与标题创作。</p></div><span className="connected"><span className="green-dot"/> 已连接</span></div><label>中转站 Base URL</label><div className="input-icon"><Link2 size={16}/><input value={value("textBase", "https://fast.sbbbbbbbbb.xyz/v1")} onChange={(e) => save("textBase", e.target.value)}/></div><label>API Key</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={value("textKey", "")} placeholder="使用 .env.local 中的密钥" onChange={(e) => save("textKey", e.target.value)}/></div><label>模型</label>{modelSelector("text", "textModel", "gpt-5.6-terra")}<div className="config-actions"><button className="test-btn" onClick={() => getModels("text")} disabled={loadingModels === "text"}>{loadingModels === "text" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => test("文本模型")}>测试连接 <ChevronRight size={15}/></button></div></div><div className="panel config-panel"><div className="panel-title"><div><h2>图片模型</h2><p>用于封面与正文段落配图。</p></div><span className="connected"><span className="green-dot"/> 已连接</span></div><label>图片接口地址</label><div className="input-icon"><Link2 size={16}/><input value={value("imageUrl", "https://fast.sbbbbbbbbb.xyz/v1/images/generations")} onChange={(e) => save("imageUrl", e.target.value)}/></div><label>API Key</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={value("imageKey", "")} placeholder="使用 .env.local 中的密钥" onChange={(e) => save("imageKey", e.target.value)}/></div><label>模型</label>{modelSelector("image", "imageModel", "gpt-image-2.5-flare")}<div className="config-actions"><button className="test-btn" onClick={() => getModels("image")} disabled={loadingModels === "image"}>{loadingModels === "image" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => test("图片模型")}>测试连接 <ChevronRight size={15}/></button></div></div><div className="panel config-panel firecrawl"><div className="panel-title"><div><h2><Search size={18}/> Firecrawl 搜索</h2><p>为文章生成提供实时资料。</p></div><span className="connected"><span className="green-dot"/> 已连接</span></div><label>Firecrawl API Key</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={value("firecrawlKey", "")} placeholder="使用 .env.local 中的密钥" onChange={(e) => save("firecrawlKey", e.target.value)}/></div><div className="firecrawl-foot"><span><Check size={15}/> 搜索结果自动附加来源</span><button className="test-btn" onClick={() => test("Firecrawl")}>测试连接 <ChevronRight size={15}/></button></div></div><div className="panel config-panel zhihu-config"><div className="panel-title"><div><h2><Flame size={18}/> 知乎数据</h2><p>填写知乎数据开放平台 Access Secret。</p></div><span className={value("zhihuAccessSecret", "") ? "connected" : "connected muted"}>{value("zhihuAccessSecret", "") ? <><span className="green-dot"/> 已配置</> : "未配置"}</span></div><label>知乎 Access Secret</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={value("zhihuAccessSecret", "")} placeholder="使用 .env.local 中的密钥" onChange={(e) => save("zhihuAccessSecret", e.target.value)}/></div><div className="firecrawl-foot"><span><Check size={15}/> 密钥仅保存在当前浏览器</span><button className="test-btn" onClick={() => test("知乎数据")}>测试连接 <ChevronRight size={15}/></button></div></div></div> : <Platforms notify={notify}/>}</div>;
+  const secretInput = (key: string, label: string) => <div className="input-icon"><KeyRound size={16}/><input type="password" value={saved[key] || ""} placeholder={configured[key] ? "已保存，重新输入才会覆盖" : `请输入${label}`} onChange={(event) => save(key, event.target.value)}/></div>;
+  const configuredLabel = (key: string) => configured[key] ? <><span className="green-dot"/> 已配置</> : "未配置";
+  return <div className="page settings-page">
+    <div className="page-heading"><div><p className="eyebrow">配置中心</p><h1>让墨稿更懂你的工作流</h1><p className="hero-sub">配置保存到本地 SQLite；密钥不会在页面回显。</p></div><button className="save-btn" onClick={() => void persist()} disabled={saving}><Check size={16}/>{saving ? "保存中..." : "保存配置"}</button></div>
+    <div className="settings-tabs"><button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><Bot size={16}/> AI 服务</button><button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}><KeyRound size={16}/> 平台密钥</button></div>
+    {tab === "ai" ? <div className="settings-grid">
+      <div className="panel config-panel"><div className="panel-title"><div><h2>文本模型</h2><p>用于文章生成、去痕与标题创作。</p></div><span className={configured.textKey ? "connected" : "connected muted"}>{configuredLabel("textKey")}</span></div><label>中转站 Base URL</label><div className="input-icon"><Link2 size={16}/><input value={value("textBase", "https://fast.sbbbbbbbbb.xyz/v1")} onChange={(event) => save("textBase", event.target.value)}/></div><label>API Key</label>{secretInput("textKey", "API Key")}<label>模型</label>{modelSelector("text", "textModel", "gpt-5.6-terra")}<div className="config-actions"><button className="test-btn" onClick={() => void getModels("text")} disabled={loadingModels === "text"}>{loadingModels === "text" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => void test("文本模型")}>测试连接 <ChevronRight size={15}/></button></div></div>
+      <div className="panel config-panel"><div className="panel-title"><div><h2>图片模型</h2><p>用于封面与正文段落配图。</p></div><span className={configured.imageKey ? "connected" : "connected muted"}>{configuredLabel("imageKey")}</span></div><label>图片接口地址</label><div className="input-icon"><Link2 size={16}/><input value={value("imageUrl", "https://fast.sbbbbbbbbb.xyz/v1/images/generations")} onChange={(event) => save("imageUrl", event.target.value)}/></div><label>API Key</label>{secretInput("imageKey", "API Key")}<label>模型</label>{modelSelector("image", "imageModel", "gpt-image-2.5-flare")}<div className="config-actions"><button className="test-btn" onClick={() => void getModels("image")} disabled={loadingModels === "image"}>{loadingModels === "image" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => void test("图片模型")}>测试连接 <ChevronRight size={15}/></button></div></div>
+      <div className="panel config-panel firecrawl"><div className="panel-title"><div><h2><Search size={18}/> Firecrawl 搜索</h2><p>为文章生成提供实时资料。</p></div><span className={configured.firecrawlKey ? "connected" : "connected muted"}>{configuredLabel("firecrawlKey")}</span></div><label>Firecrawl API Key</label>{secretInput("firecrawlKey", "Firecrawl API Key")}<div className="firecrawl-foot"><span><Check size={15}/> 搜索结果自动附加来源</span><button className="test-btn" onClick={() => void test("Firecrawl")}>测试连接 <ChevronRight size={15}/></button></div></div>
+      <div className="panel config-panel zhihu-config"><div className="panel-title"><div><h2><Flame size={18}/> 知乎数据</h2><p>填写知乎数据开放平台 Access Secret。</p></div><span className={configured.zhihuAccessSecret ? "connected" : "connected muted"}>{configuredLabel("zhihuAccessSecret")}</span></div><label>知乎 Access Secret</label>{secretInput("zhihuAccessSecret", "知乎 Access Secret")}<div className="firecrawl-foot"><span><Check size={15}/> 密钥只会保存在本地数据库</span><button className="test-btn" onClick={() => void test("知乎数据")}>测试连接 <ChevronRight size={15}/></button></div></div>
+    </div> : <ConfigPlatforms values={saved} configured={configured} update={save} saving={saving} onSave={persist}/>}
+  </div>;
 }
 
-function Platforms({notify}:{notify:(s:string)=>void}) {
-  const [platform, setPlatform] = useState("wechat");
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [autoPublish, setAutoPublish] = useState(false);
-  useEffect(() => { try { const config = JSON.parse(localStorage.getItem("article-flow-config") || "{}"); setValues(config); setAutoPublish(config.wechatAutoPublish === "true"); } catch { /* ignore malformed local data */ } }, []);
-  const items:any[] = [["wechat","微信公众号",<BookOpen/> ,"已配置"],["xiaohongshu","小红书",<PenLine/> ,"未配置"],["zhihu","知乎",<FileText/> ,"未配置"],["bilibili","B 站",<Youtube/> ,"未配置"]];
-  const current:any = items.find((x:any)=>x[0]===platform) || items[0];
-  const isWechat = platform === "wechat";
-  const fields = isWechat ? [["微信公众号 AppID","wechatAppId"],["微信公众号 AppSecret","wechatSecret"],["作者名称","wechatAuthor"]] : [[`${current[1]} App Key`,`${platform}Key`],[`${current[1]} App Secret`,`${platform}Secret`]];
-  const value = (key:string, fallback:string) => values[key] || fallback;
-  const update = (key:string, value:string) => setValues((current) => ({ ...current, [key]: value }));
-  const persist = () => { const next = { ...values, wechatAutoPublish: String(autoPublish) }; localStorage.setItem("article-flow-config", JSON.stringify(next)); setValues(next); notify(`${current[1]}配置已保存`); };
-  return <div className="platform-layout"><div className="platform-list">{items.map(([id,name,icon,status])=><button className={platform===id?"platform-item active":"platform-item"} key={id} onClick={()=>setPlatform(id)}>{icon}<span><b>{name}</b><small>{status}</small></span><ChevronRight size={15}/></button>)}</div><div className="panel config-panel platform-form"><div className="panel-title"><div><h2>{current[1]}</h2><p>{isWechat ? "配置后可自动创建草稿并发布。" : `配置后可同步内容到${current[1]}。`}</p></div><span className="connected">{isWechat&&<span className="green-dot"/>}{isWechat?"已配置":"未配置"}</span></div>{fields.map(([label,key]:any)=><div key={label}><label>{label}</label><div className="input-icon"><KeyRound size={16}/><input type={label.includes("Secret")?"password":"text"} value={value(key, label === "作者名称" ? "开发阿雷" : "")} placeholder={label.includes("Secret") ? "使用 .env.local 中的密钥" : "请输入"} onChange={(e)=>update(key,e.target.value)}/></div></div>)}{isWechat&&<div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Rocket size={17}/></div><div><b>自动发布</b><small>关闭后仅创建草稿，不会直接发布</small></div></div><button className={autoPublish?"toggle on":"toggle"} onClick={()=>setAutoPublish((current)=>!current)}><i/></button></div>}<button className="save-wide" onClick={persist}>保存{current[1]}配置</button></div></div>;
+function ConfigPlatforms({ values, configured, update, saving, onSave }: { values: Record<string, string>; configured: Record<string, boolean>; update: (key: string, value: string) => void; saving: boolean; onSave: () => Promise<void> }) {
+  const secretConfigured = configured.wechatSecret;
+  const autoPublish = values.wechatAutoPublish === "true";
+  return <div className="platform-layout">
+    <div className="platform-list"><div className="platform-item active"><BookOpen/><span><b>微信公众号</b><small>{secretConfigured ? "已配置" : "未配置"}</small></span><ChevronRight size={15}/></div></div>
+    <div className="panel config-panel platform-form"><div className="panel-title"><div><h2>微信公众号</h2><p>配置后可创建草稿；开启自动发布后将继续提交发布。</p></div><span className={secretConfigured ? "connected" : "connected muted"}>{secretConfigured ? <><span className="green-dot"/> 已配置</> : "未配置"}</span></div>
+      <label>微信公众号 AppID</label><div className="input-icon"><KeyRound size={16}/><input value={values.wechatAppId || ""} placeholder="请输入 AppID" onChange={(event) => update("wechatAppId", event.target.value)}/></div>
+      <label>微信公众号 AppSecret</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={values.wechatSecret || ""} placeholder={secretConfigured ? "已保存，重新输入才会覆盖" : "请输入 AppSecret"} onChange={(event) => update("wechatSecret", event.target.value)}/></div>
+      <label>作者名称</label><div className="input-icon"><KeyRound size={16}/><input value={values.wechatAuthor || ""} placeholder="请输入作者名称" onChange={(event) => update("wechatAuthor", event.target.value)}/></div>
+      <div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Rocket size={17}/></div><div><b>自动发布</b><small>关闭后仅创建草稿，不会直接发布</small></div></div><button className={autoPublish ? "toggle on" : "toggle"} onClick={() => update("wechatAutoPublish", String(!autoPublish))}><i/></button></div>
+      <button className="save-wide" onClick={() => void onSave()} disabled={saving}>{saving ? "保存中..." : "保存微信公众号配置"}</button>
+    </div>
+  </div>;
 }

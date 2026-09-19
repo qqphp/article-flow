@@ -23,6 +23,8 @@ type ArticleRecord = {
   paragraph_image_urls?: string | null;
   paragraph_image_plans?: string | null;
   alternative_titles?: string | null;
+  publish_status: "未发布" | "已发布";
+  published_at?: string | null;
   created_at: string;
 };
 
@@ -102,9 +104,9 @@ export async function saveGeneratedArticle(input: { title: string; topic: string
     fs.writeFile(markdownPath, markdownDocument(article, input.content, "original"), "utf8"),
     fs.writeFile(sourcesPath, JSON.stringify({ topic: input.topic, searchedAt: createdAt, sources: input.sources }, null, 2), "utf8"),
   ]);
-  getDatabase().prepare(`INSERT INTO articles (id, title, topic, style, directory, markdown_path, sources_path, alternative_titles, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, input.title, input.topic, input.style, directory, markdownPath, sourcesPath, JSON.stringify(input.alternatives || []), createdAt);
+  getDatabase().prepare(`INSERT INTO articles (id, title, topic, style, directory, markdown_path, sources_path, alternative_titles, publish_status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, input.title, input.topic, input.style, directory, markdownPath, sourcesPath, JSON.stringify(input.alternatives || []), "未发布", createdAt);
   return { id, directory };
 }
 
@@ -141,6 +143,8 @@ export async function readArticle(articleId: string) {
     sources,
     firecrawlSearched: sources.length > 0,
     createdAt: article.created_at,
+    publishStatus: article.publish_status || "未发布",
+    publishedAt: article.published_at || null,
   };
 }
 
@@ -158,6 +162,25 @@ export type RecentArticleCard = {
   wordCount: number;
   imageCount: number;
   createdAt: string;
+};
+
+export type ArticleQueueItem = {
+  articleId: string;
+  title: string;
+  style: string;
+  publishStatus: "未发布" | "已发布";
+  coverUrl: string | null;
+  createdAt: string;
+};
+
+export type ArticlePublishStats = {
+  cumulativePublished: number;
+  monthlyPublished: number;
+  weeklyPublished: number;
+  todayPublished: number;
+  pending: number;
+  totalArticles: number;
+  monthlyArticles: number;
 };
 
 async function pathExists(filePath?: string | null) {
@@ -208,6 +231,93 @@ export async function listRecentArticles(limit = 3): Promise<RecentArticleCard[]
     });
   }
   return cards;
+}
+
+export async function listArticleQueue(requestedPage = 1) {
+  const pageSize = 8;
+  const total = Number((getDatabase().prepare("SELECT COUNT(*) AS count FROM articles").get() as { count: number }).count || 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(totalPages, Math.max(1, Math.round(requestedPage) || 1));
+  const rows = getDatabase().prepare(`
+    SELECT id, title, style, cover_path, cover_image_url, publish_status, created_at
+    FROM articles
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(pageSize, (page - 1) * pageSize) as ArticleRecord[];
+
+  const articles = await Promise.all(rows.map(async (article): Promise<ArticleQueueItem> => {
+    const hasCover = await pathExists(article.cover_path);
+    return {
+      articleId: article.id,
+      title: article.title,
+      style: article.style,
+      publishStatus: article.publish_status || "未发布",
+      coverUrl: hasCover && article.cover_path ? article.cover_image_url || assetUrl(article.id, article.cover_path) : null,
+      createdAt: article.created_at,
+    };
+  }));
+  return { articles, page, pageSize, total, totalPages };
+}
+
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function shanghaiPeriodStart(period: "day" | "week" | "month", now = new Date()) {
+  const shanghaiNow = new Date(now.getTime() + SHANGHAI_OFFSET_MS);
+  const year = shanghaiNow.getUTCFullYear();
+  const month = shanghaiNow.getUTCMonth();
+  const day = shanghaiNow.getUTCDate();
+  const weekdayOffset = (shanghaiNow.getUTCDay() + 6) % 7;
+  const startDay = period === "week" ? day - weekdayOffset : period === "month" ? 1 : day;
+  return new Date(Date.UTC(year, month, startDay) - SHANGHAI_OFFSET_MS).toISOString();
+}
+
+export function getArticlePublishStats(now = new Date()): ArticlePublishStats {
+  const dayStart = shanghaiPeriodStart("day", now);
+  const weekStart = shanghaiPeriodStart("week", now);
+  const monthStart = shanghaiPeriodStart("month", now);
+  const row = getDatabase().prepare(`
+    SELECT
+      COUNT(*) AS total_articles,
+      SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS monthly_articles,
+      SUM(CASE WHEN publish_status = '已发布' THEN 1 ELSE 0 END) AS cumulative_published,
+      SUM(CASE WHEN publish_status = '已发布' AND published_at >= ? THEN 1 ELSE 0 END) AS monthly_published,
+      SUM(CASE WHEN publish_status = '已发布' AND published_at >= ? THEN 1 ELSE 0 END) AS weekly_published,
+      SUM(CASE WHEN publish_status = '已发布' AND published_at >= ? THEN 1 ELSE 0 END) AS today_published,
+      SUM(CASE WHEN publish_status = '未发布' THEN 1 ELSE 0 END) AS pending
+    FROM articles
+  `).get(monthStart, monthStart, weekStart, dayStart) as Record<string, number | null>;
+  return {
+    cumulativePublished: Number(row.cumulative_published || 0),
+    monthlyPublished: Number(row.monthly_published || 0),
+    weeklyPublished: Number(row.weekly_published || 0),
+    todayPublished: Number(row.today_published || 0),
+    pending: Number(row.pending || 0),
+    totalArticles: Number(row.total_articles || 0),
+    monthlyArticles: Number(row.monthly_articles || 0),
+  };
+}
+
+export function markArticlePublished(articleId: string) {
+  const result = getDatabase().prepare(`
+    UPDATE articles
+    SET publish_status = '已发布', published_at = ?
+    WHERE id = ? AND publish_status = '未发布'
+  `).run(new Date().toISOString(), articleId);
+  return result.changes > 0;
+}
+
+export async function deleteStoredArticle(articleId: string) {
+  const article = getArticleRecord(articleId);
+  if (!article) return false;
+  const root = path.resolve(articlesDirectory);
+  const directory = path.resolve(article.directory);
+  const relativeDirectory = path.relative(root, directory);
+  if (!relativeDirectory || relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) {
+    throw new Error("文章目录不在允许删除的范围内");
+  }
+  await fs.rm(directory, { recursive: true, force: true });
+  getDatabase().prepare("DELETE FROM articles WHERE id = ?").run(articleId);
+  return true;
 }
 
 export async function readArticleSource(articleId: string, preferHumanized = true) {

@@ -11,9 +11,8 @@ export async function POST(request: Request) {
     model?: string;
     messages?: Array<{ role?: string; content?: string }>;
     stream?: boolean;
-    config?: { zhihuAccessSecret?: string };
   };
-  const secret = resolveZhihuSecret(body.config);
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   const model = body.model?.trim() || "";
   if (!MODELS.has(model)) return NextResponse.json({ error: "请选择有效的直答模型" }, { status: 400 });

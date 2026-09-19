@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
 import { modelFetch } from "../../lib/model-fetch";
+import { getAppConfig } from "../../lib/config-store";
 
 type ModelsBody = { type?: "text" | "image"; baseUrl?: string; apiKey?: string };
 
@@ -13,9 +14,11 @@ function modelsEndpoint(baseUrl: string, type: "text" | "image") {
 export async function POST(request: Request) {
   const body = (await request.json()) as ModelsBody;
   const type = body.type === "image" ? "image" : "text";
-  const apiKey = body.apiKey?.trim() || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
-  if (!body.baseUrl?.trim() || !apiKey) return NextResponse.json({ error: "请先填写接口地址和 API Key" }, { status: 400 });
-  const endpoint = modelsEndpoint(body.baseUrl, type);
+  const config = getAppConfig();
+  const apiKey = body.apiKey?.trim() || (type === "image" ? config.imageKey : config.textKey);
+  const baseUrl = body.baseUrl?.trim() || (type === "image" ? config.imageUrl || config.textBase : config.textBase);
+  if (!baseUrl || !apiKey) return NextResponse.json({ error: "请先填写接口地址和 API Key" }, { status: 400 });
+  const endpoint = modelsEndpoint(baseUrl, type);
   await appendRequestLog({ type, operation: "获取可用模型", endpoint, model: "-", requestBody: { method: "GET" } });
   try {
     const response = await modelFetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(20000) });

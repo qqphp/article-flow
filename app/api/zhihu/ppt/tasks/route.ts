@@ -11,9 +11,8 @@ export async function POST(request: Request) {
     resourceUrl?: string;
     numPages?: number;
     idempotencyKey?: string;
-    config?: { zhihuAccessSecret?: string };
   };
-  const secret = resolveZhihuSecret(body.config);
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   const resourceUrl = body.resourceUrl?.trim() || "";
   if (!PPT_URL.test(resourceUrl)) {

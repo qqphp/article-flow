@@ -1,4 +1,4 @@
-export type ZhihuConfig = { zhihuAccessSecret?: string };
+import { getAppConfig } from "./config-store";
 
 export type ZhihuQuotaItem = {
   apiId: string;
@@ -85,8 +85,8 @@ export class ZhihuError extends Error {
   }
 }
 
-export function resolveZhihuSecret(config?: ZhihuConfig) {
-  return config?.zhihuAccessSecret?.trim() || process.env.ZHIHU_ACCESS_SECRET?.trim() || "";
+export function resolveZhihuSecret() {
+  return getAppConfig().zhihuAccessSecret;
 }
 
 export function zhihuErrorPayload(error: unknown) {

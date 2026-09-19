@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   const form = await request.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: "请上传 PDF 文件" }, { status: 400 });
   const file = form.get("file");
-  const secret = resolveZhihuSecret({ zhihuAccessSecret: String(form.get("zhihuAccessSecret") || "") });
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   if (!(file instanceof File)) return NextResponse.json({ error: "请上传 PDF 文件" }, { status: 400 });
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");

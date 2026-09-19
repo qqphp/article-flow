@@ -37,9 +37,16 @@ export function getDatabase() {
     paragraph_image_urls TEXT NOT NULL DEFAULT '[]',
     paragraph_image_plans TEXT NOT NULL DEFAULT '[]',
     alternative_titles TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    publish_status TEXT NOT NULL DEFAULT '未发布',
+    published_at TEXT
   );
   CREATE INDEX IF NOT EXISTS articles_created_at_idx ON articles(created_at DESC);
+  CREATE TABLE IF NOT EXISTS app_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS zhihu_hot_list_cache (
     limit_count INTEGER PRIMARY KEY,
     total INTEGER NOT NULL,
@@ -58,9 +65,14 @@ export function getDatabase() {
     ["paragraph_image_urls", "ALTER TABLE articles ADD COLUMN paragraph_image_urls TEXT NOT NULL DEFAULT '[]'"],
     ["paragraph_image_plans", "ALTER TABLE articles ADD COLUMN paragraph_image_plans TEXT NOT NULL DEFAULT '[]'"],
     ["alternative_titles", "ALTER TABLE articles ADD COLUMN alternative_titles TEXT NOT NULL DEFAULT '[]'"],
+    ["publish_status", "ALTER TABLE articles ADD COLUMN publish_status TEXT NOT NULL DEFAULT '未发布'"],
+    ["published_at", "ALTER TABLE articles ADD COLUMN published_at TEXT"],
   ] as const;
   for (const [column, sql] of migrations) {
     if (!articleColumns.has(column)) database.exec(sql);
+  }
+  if (!articleColumns.has("publish_status")) {
+    database.prepare("UPDATE articles SET publish_status = '未发布', published_at = NULL").run();
   }
   globalForDatabase.articleFlowDatabase = database;
   return database;

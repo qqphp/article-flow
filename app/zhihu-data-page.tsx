@@ -42,20 +42,11 @@ const ZHIDA_MODELS = [
   ["zhida-agent", "智能思考", "更完整的任务处理"],
 ] as const;
 
-function getZhihuConfig() {
-  try {
-    const saved = JSON.parse(localStorage.getItem("article-flow-config") || "{}");
-    return { zhihuAccessSecret: saved.zhihuAccessSecret || "" };
-  } catch {
-    return { zhihuAccessSecret: "" };
-  }
-}
-
 async function zhihuPost(path: string, payload: Record<string, unknown> = {}) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, config: getZhihuConfig() }),
+    body: JSON.stringify(payload),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "请求失败");
@@ -474,7 +465,7 @@ function ZhidaTab({ notify }: { notify: (message: string) => void }) {
       const response = await fetch("/api/zhihu/zhida", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: true, config: getZhihuConfig() }),
+        body: JSON.stringify({ model, messages, stream: true }),
       });
       const contentType = response.headers.get("content-type") || "";
       if (!response.ok || contentType.includes("application/json")) {
@@ -593,7 +584,6 @@ function PdfTab({ notify }: { notify: (message: string) => void }) {
     try {
       const form = new FormData();
       form.append("file", file);
-      form.append("zhihuAccessSecret", getZhihuConfig().zhihuAccessSecret);
       const uploadResponse = await fetch("/api/zhihu/pdf/upload", { method: "POST", body: form });
       const uploaded = await uploadResponse.json().catch(() => ({}));
       if (!uploadResponse.ok) throw new Error(uploaded.error || "PDF 上传失败");

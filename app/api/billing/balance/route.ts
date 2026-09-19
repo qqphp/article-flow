@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
+import { getAppConfig } from "../../../lib/config-store";
 
 function numberFrom(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export async function GET() {
-  const key = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
-  const base = (process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
+  const config = getAppConfig();
+  const key = config.textKey;
+  const base = config.textBase.replace(/\/$/, "");
   if (!key || !base) return NextResponse.json({ error: "未配置模型服务" }, { status: 503 });
   try {
     const response = await fetch(`${base}/billing/balance`, { headers: { Authorization: `Bearer ${key}` }, cache: "no-store", signal: AbortSignal.timeout(12000) });

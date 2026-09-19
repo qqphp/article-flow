@@ -4,6 +4,7 @@ import { readArticle, readArticleSource, saveHumanizedArticle } from "../../lib/
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
+import { getAppConfig } from "../../lib/config-store";
 
 function demoHumanize(content: string) {
   return content
@@ -17,12 +18,13 @@ function demoHumanize(content: string) {
 }
 
 export async function POST(request: Request) {
-  const { articleId, config } = await request.json();
+  const { articleId } = await request.json();
   if (!articleId) return NextResponse.json({ error: "缺少文章存档，无法生成去痕 Markdown" }, { status: 400 });
   const source = await readArticleSource(articleId, false);
   if (!source?.content.trim()) return NextResponse.json({ error: "原始 Markdown 文件不存在或内容为空" }, { status: 404 });
-  const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
-  const base = (config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
+  const config = getAppConfig();
+  const apiKey = config.textKey;
+  const base = config.textBase.replace(/\/$/, "");
 
   if (!apiKey || !base) {
     const content = await saveHumanizedArticle(articleId, demoHumanize(source.content));
@@ -32,7 +34,7 @@ export async function POST(request: Request) {
 
   try {
     const requestBody = {
-      model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o",
+      model: config.textModel || "gpt-4o",
       temperature: 0.6,
       max_output_tokens: 6000,
       store: false,

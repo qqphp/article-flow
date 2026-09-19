@@ -3,8 +3,9 @@ import { appendRequestLog } from "../../lib/request-log";
 import { readArticle, ResearchSource, saveGeneratedArticle } from "../../lib/article-store";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
+import { AppConfig, getAppConfig } from "../../lib/config-store";
 
-type GenerateBody = { topic?: string; style?: string; search?: boolean; config?: { textBase?: string; textKey?: string; textModel?: string; firecrawlKey?: string } };
+type GenerateBody = { topic?: string; style?: string; search?: boolean };
 
 const demo = (topic: string, style: string, sources: ResearchSource[]) => ({
   title: topic || "把一个想法，变成值得分享的内容",
@@ -18,8 +19,8 @@ const demo = (topic: string, style: string, sources: ResearchSource[]) => ({
   demo: true,
 });
 
-async function firecrawlSearch(topic: string, config?: GenerateBody["config"]) {
-  const key = config?.firecrawlKey || process.env.FIRECRAWL_API_KEY;
+async function firecrawlSearch(topic: string, config: AppConfig) {
+  const key = config.firecrawlKey;
   if (!key) return [] as ResearchSource[];
   const endpoint = "https://api.firecrawl.dev/v1/search";
   const requestBody = { query: topic, limit: 5 };
@@ -37,11 +38,11 @@ async function firecrawlSearch(topic: string, config?: GenerateBody["config"]) {
   } catch { return []; }
 }
 
-async function callModel(topic: string, style: string, sources: ResearchSource[], config?: GenerateBody["config"]) {
-  const apiKey = config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
-  const base = (config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "");
+async function callModel(topic: string, style: string, sources: ResearchSource[], config: AppConfig) {
+  const apiKey = config.textKey;
+  const base = config.textBase.replace(/\/$/, "");
   if (!apiKey || !base) return null;
-  const requestBody = { model: config?.textModel || process.env.AI_TEXT_MODEL || "gpt-4o", temperature: 0.75, max_output_tokens: 3000, store: false, input: [
+  const requestBody = { model: config.textModel || "gpt-4o", temperature: 0.75, max_output_tokens: 3000, store: false, input: [
     { role: "developer", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（严格返回 3–6 个字符串）、content（Markdown 字符串）。正文内容不得展示、罗列或引用参考资料、来源链接或引用列表；参考资料仅用于辅助事实判断。内容要有故事化开头、清晰小标题和可执行建议。` },
     { role: "user", content: `主题：${topic}\n参考资料：${sources.map((source) => `${source.title || "资料"}: ${source.url}`).join("\n") || "无"}` },
   ], text: { format: { type: "json_object" } } };
@@ -71,15 +72,16 @@ export async function POST(request: Request) {
   const body = (await request.json()) as GenerateBody;
   const topic = body.topic?.trim();
   if (!topic) return NextResponse.json({ error: "请输入文章主题" }, { status: 400 });
-  const sources = body.search ? await firecrawlSearch(topic, body.config) : [];
+  const config = getAppConfig();
+  const sources = body.search ? await firecrawlSearch(topic, config) : [];
   try {
-    const result = await callModel(topic, body.style || "默认", sources, body.config) || demo(topic, body.style || "默认", sources);
+    const result = await callModel(topic, body.style || "默认", sources, config) || demo(topic, body.style || "默认", sources);
     const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
     const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources, alternatives: result.alternatives });
     const saved = await readArticle(article.id);
     return NextResponse.json({ ...result, ...saved, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   } catch (error: any) {
-    const configured = Boolean((body.config?.textKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY) && (body.config?.textBase || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL));
+    const configured = Boolean(config.textKey && config.textBase);
     const timedOut = error?.name === "TimeoutError";
     if (configured) return NextResponse.json({ error: timedOut ? "文章生成超过 6 分钟，请稍后重试或缩短主题后重试" : error?.message || "AI 文章生成失败，请稍后重试" }, { status: timedOut ? 504 : 502 });
     const result = demo(topic, body.style || "默认", sources);

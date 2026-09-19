@@ -5,8 +5,8 @@ import { fetchZhihuQuota, resolveZhihuSecret, ZHIHU_ENDPOINTS, zhihuErrorPayload
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({})) as { apiIds?: string; config?: { zhihuAccessSecret?: string } };
-  const secret = resolveZhihuSecret(body.config);
+  const body = await request.json().catch(() => ({})) as { apiIds?: string };
+  const secret = resolveZhihuSecret();
   if (!secret) return NextResponse.json({ error: "请先在配置中心填写知乎数据 Access Secret" }, { status: 400 });
   await appendRequestLog({ type: "text", operation: "知乎额度", endpoint: ZHIHU_ENDPOINTS.quota, model: "zhihu", requestBody: { apiIds: body.apiIds || "all" } });
   try {
