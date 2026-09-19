@@ -4,13 +4,14 @@ import { readArticle, ResearchSource, saveGeneratedArticle } from "../../lib/art
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
 import { AppConfig, getAppConfig } from "../../lib/config-store";
+import { ArticleStyle, getArticleStyle } from "../../lib/article-styles";
 
-type GenerateBody = { topic?: string; style?: string; search?: boolean };
+type GenerateBody = { topic?: string; styleId?: string; search?: boolean };
 
-const demo = (topic: string, style: string, sources: ResearchSource[]) => ({
+const demo = (topic: string, style: ArticleStyle, sources: ResearchSource[]) => ({
   title: topic || "把一个想法，变成值得分享的内容",
   alternatives: [
-    `${topic || "内容创作"}：一套可复用的 ${style || "默认"} 写作方法`,
+    `${topic || "内容创作"}：一套可复用的 ${style.title} 写作方法`,
     `别再从零开始：普通人也能掌握的内容工作流`,
     `从灵感到发布，我把内容创作拆成了这几步`,
   ],
@@ -38,12 +39,12 @@ async function firecrawlSearch(topic: string, config: AppConfig) {
   } catch { return []; }
 }
 
-async function callModel(topic: string, style: string, sources: ResearchSource[], config: AppConfig) {
+async function callModel(topic: string, style: ArticleStyle, sources: ResearchSource[], config: AppConfig) {
   const apiKey = config.textKey;
   const base = config.textBase.replace(/\/$/, "");
   if (!apiKey || !base) return null;
   const requestBody = { model: config.textModel || "gpt-4o", temperature: 0.75, max_output_tokens: 3000, store: false, input: [
-    { role: "developer", content: `你是一位中文公众号作者。请使用“${style || "默认"}”风格，输出 JSON，字段为 title、alternatives（严格返回 3–6 个字符串）、content（Markdown 字符串）。正文内容不得展示、罗列或引用参考资料、来源链接或引用列表；参考资料仅用于辅助事实判断。内容要有故事化开头、清晰小标题和可执行建议。` },
+    { role: "developer", content: `你是一位中文公众号作者。请严格遵循以下“${style.title}”写作风格指南，输出 JSON，字段为 title、alternatives（严格返回 3–6 个字符串）、content（Markdown 字符串）。正文内容不得展示、罗列或引用参考资料、来源链接或引用列表；参考资料仅用于辅助事实判断。\n\n--- 写作风格指南开始 ---\n${style.content}\n--- 写作风格指南结束 ---` },
     { role: "user", content: `主题：${topic}\n参考资料：${sources.map((source) => `${source.title || "资料"}: ${source.url}`).join("\n") || "无"}` },
   ], text: { format: { type: "json_object" } } };
   const endpoint = responsesEndpoint(base);
@@ -72,20 +73,22 @@ export async function POST(request: Request) {
   const body = (await request.json()) as GenerateBody;
   const topic = body.topic?.trim();
   if (!topic) return NextResponse.json({ error: "请输入文章主题" }, { status: 400 });
+  const style = await getArticleStyle(body.styleId);
+  if (!style) return NextResponse.json({ error: "所选文章风格不存在或已失效，请刷新风格列表后重试" }, { status: 400 });
   const config = getAppConfig();
   const sources = body.search ? await firecrawlSearch(topic, config) : [];
   try {
-    const result = await callModel(topic, body.style || "默认", sources, config) || demo(topic, body.style || "默认", sources);
+    const result = await callModel(topic, style, sources, config) || demo(topic, style, sources);
     const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
-    const article = await saveGeneratedArticle({ title, topic, style: body.style || "默认", content: result.content, sources, alternatives: result.alternatives });
+    const article = await saveGeneratedArticle({ title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives });
     const saved = await readArticle(article.id);
     return NextResponse.json({ ...result, ...saved, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   } catch (error: any) {
     const configured = Boolean(config.textKey && config.textBase);
     const timedOut = error?.name === "TimeoutError";
     if (configured) return NextResponse.json({ error: timedOut ? "文章生成超过 6 分钟，请稍后重试或缩短主题后重试" : error?.message || "AI 文章生成失败，请稍后重试" }, { status: timedOut ? 504 : 502 });
-    const result = demo(topic, body.style || "默认", sources);
-    const article = await saveGeneratedArticle({ title: result.title, topic, style: body.style || "默认", content: result.content, sources, alternatives: result.alternatives });
+    const result = demo(topic, style, sources);
+    const article = await saveGeneratedArticle({ title: result.title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives });
     const saved = await readArticle(article.id);
     return NextResponse.json({ ...result, ...saved, articleId: article.id, firecrawlSearched: Boolean(body.search) });
   }

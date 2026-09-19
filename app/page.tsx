@@ -7,15 +7,18 @@ import remarkGfm from "remark-gfm";
 import ZhihuDataPage from "./zhihu-data-page";
 
 type NavKey = "overview" | "write" | "assets" | "publish" | "zhihu-data" | "settings" | "request-logs";
-const styles = [
-  ["默认风格", "2000–4000 字", "适合大多数主题"], ["高流量 / 爆款", "2500–4000 字", "强钩子、节奏快"], ["清单体 / 方法论", "2000–4000 字", "结构清晰、可执行"], ["资源盘点", "3000–6000 字", "适合工具与合集"], ["个人实测推荐", "4000–7000 字", "真实体验、带观点"], ["故事化 / 情感共鸣", "2500–4500 字", "更有温度"],
-];
+type ArticleStyle = { id: string; title: string; summary: string; content: string };
+const defaultStyleId = "viral_style.md";
 const steps = ["构思", "写作", "去痕", "配图", "发布"];
 
 export default function Home() {
   const [nav, setNav] = useState<NavKey>("overview");
   const [topic, setTopic] = useState("AI 时代，普通人如何建立自己的内容工作流？");
   const [style, setStyle] = useState("高流量 / 爆款");
+  const [styleId, setStyleId] = useState(defaultStyleId);
+  const [articleStyles, setArticleStyles] = useState<ArticleStyle[]>([]);
+  const [stylesLoading, setStylesLoading] = useState(true);
+  const [stylesError, setStylesError] = useState("");
   const [searchOn, setSearchOn] = useState(true);
   const [running, setRunning] = useState(false);
   const [generated, setGenerated] = useState(false);
@@ -26,6 +29,19 @@ export default function Home() {
   const [usage, setUsage] = useState<{ percent: number; remaining?: number; resetAt?: string; unavailable?: boolean; amount?: number } | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const notify = useCallback((message: string) => { setToast(message); setTimeout(() => setToast(""), 2400); }, []);
+  useEffect(() => { void (async () => {
+    try {
+      const response = await fetch("/api/article-styles", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "读取文章风格失败");
+      const loaded = Array.isArray(data.styles) ? data.styles as ArticleStyle[] : [];
+      setArticleStyles(loaded);
+      if (!loaded.length) throw new Error("当前没有可用的文章风格文件");
+      setStyleId((current) => loaded.some((item) => item.id === current) ? current : (loaded.find((item) => item.id === defaultStyleId) || loaded[0]).id);
+      setStylesError("");
+    } catch (error: any) { setStylesError(error.message || "读取文章风格失败"); }
+    finally { setStylesLoading(false); }
+  })(); }, []);
   useEffect(() => {
     fetch("/api/billing/balance").then(async (response) => {
       const data = await response.json();
@@ -53,6 +69,10 @@ export default function Home() {
     if (generated && article?.articleId) window.dispatchEvent(new Event("article-flow-articles-updated"));
   }, [article?.articleId, generated]);
   useEffect(() => {
+    const matched = articleStyles.find((item) => item.title === article?.style);
+    if (matched) setStyleId(matched.id);
+  }, [article?.style, articleStyles]);
+  useEffect(() => {
     const syncPendingCount = async () => {
       try {
         const response = await fetch("/api/articles?summary=1");
@@ -64,7 +84,7 @@ export default function Home() {
     window.addEventListener("article-flow-articles-updated", syncPendingCount);
     return () => window.removeEventListener("article-flow-articles-updated", syncPendingCount);
   }, []);
-  const start = async () => { setRunning(true); setHumanized(false); setImages(false); setGenerated(false); setArticle(null); try { const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, style, search: searchOn }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "生成失败"); if (typeof data.content !== "string" || !data.content.trim()) throw new Error("AI 返回的文章内容为空"); setArticle(data); setGenerated(true); notify(data.demo ? "已生成演示初稿（配置模型后可生成真实内容）" : "文章初稿已生成"); } catch (error: any) { notify(error.message || "生成失败，请稍后重试"); } finally { setRunning(false); } };
+  const start = async () => { const selectedStyle = articleStyles.find((item) => item.id === styleId); if (!selectedStyle) { notify(stylesLoading ? "文章风格正在加载，请稍后重试" : stylesError || "请选择有效的文章风格"); return; } setRunning(true); setHumanized(false); setImages(false); setGenerated(false); setArticle(null); try { const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, styleId: selectedStyle.id, search: searchOn }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "生成失败"); if (typeof data.content !== "string" || !data.content.trim()) throw new Error("AI 返回的文章内容为空"); setArticle(data); setStyle(data.style || selectedStyle.title); setGenerated(true); notify(data.demo ? "已生成演示初稿（配置模型后可生成真实内容）" : "文章初稿已生成"); } catch (error: any) { notify(error.message || "生成失败，请稍后重试"); } finally { setRunning(false); } };
   const openArticleForPublish = async (articleId: string) => {
     try {
       const response = await fetch(`/api/articles/${encodeURIComponent(articleId)}`);
@@ -92,7 +112,7 @@ export default function Home() {
     </aside>
     <section className="content">
       <header className="topbar"><div className="crumb"><button className="mobile-menu"><Menu size={20}/></button><span>{nav === "settings" ? "配置中心" : nav === "write" ? "写文章" : nav === "publish" ? "发布中心" : nav === "request-logs" ? "请求日志" : nav === "zhihu-data" ? "知乎数据" : "工作台"}</span><ChevronRight size={14}/><b>{nav === "overview" ? "概览" : nav === "write" ? "新建文章" : nav === "publish" ? "文章队列" : nav === "settings" ? "AI 与平台配置" : nav === "request-logs" ? "API 调用记录" : nav === "zhihu-data" ? "开放平台数据" : "全部内容"}</b></div><div className="top-actions"><button className="icon-btn"><Search size={18}/></button><button className="new-btn" onClick={() => { setNav("write"); window.scrollTo({ top: 0, behavior: "smooth" }); }}><Plus size={17}/> 新建文章</button></div></header>
-      {nav === "settings" ? <SettingsPage notify={notify}/> : nav === "write" ? <WritePage topic={topic} setTopic={setTopic} style={style} setStyle={setStyle} searchOn={searchOn} setSearchOn={setSearchOn} running={running} start={start} generated={generated} humanized={humanized} setHumanized={setHumanized} images={images} setImages={setImages} article={article} setArticle={setArticle} notify={notify}/> : nav === "assets" ? <AssetsPage notify={notify}/> : nav === "publish" ? <PublishPage notify={notify} onWrite={() => setNav("write")} onPublishArticle={openArticleForPublish}/> : nav === "zhihu-data" ? <ZhihuDataPage notify={notify} onOpenSettings={() => setNav("settings")}/> : nav === "request-logs" ? <RequestLogsPage/> : <Dashboard onWrite={() => setNav("write")} notify={notify}/>}
+      {nav === "settings" ? <SettingsPage notify={notify}/> : nav === "write" ? <WritePage topic={topic} setTopic={setTopic} style={style} styleId={styleId} setStyleId={setStyleId} articleStyles={articleStyles} stylesLoading={stylesLoading} stylesError={stylesError} searchOn={searchOn} setSearchOn={setSearchOn} running={running} start={start} generated={generated} humanized={humanized} setHumanized={setHumanized} images={images} setImages={setImages} article={article} setArticle={setArticle} notify={notify}/> : nav === "assets" ? <AssetsPage notify={notify}/> : nav === "publish" ? <PublishPage notify={notify} onWrite={() => setNav("write")} onPublishArticle={openArticleForPublish}/> : nav === "zhihu-data" ? <ZhihuDataPage notify={notify} onOpenSettings={() => setNav("settings")}/> : nav === "request-logs" ? <RequestLogsPage/> : <Dashboard onWrite={() => setNav("write")} notify={notify}/>}
     </section>
     {toast && <div className="toast"><Check size={16}/> {toast}</div>}
   </main>;
@@ -274,7 +294,7 @@ function PublishPage({ notify, onWrite, onPublishArticle }: { notify: (s: string
   return <div className="page"><div className="page-heading"><div><p className="eyebrow">内容分发</p><h1>发布中心</h1><p className="hero-sub">管理微信公众号文章队列与发布状态。</p></div><button className="primary-btn" onClick={onWrite}><Send size={17}/> 新建发布</button></div><div className="publish-stats">{statItems.map(([label, value]) => <div key={label as string}><small>{label}</small><strong>{value as number}</strong></div>)}</div><div className="publish-layout"><div className="channel-panel panel"><h2>发布渠道</h2><p>当前仅支持微信公众号。</p><div className="channel-row active"><BookOpen size={18}/><span><b>微信公众号</b><small>文章草稿发布</small></span></div></div><div className="panel queue-panel"><div className="panel-title"><div><h2>文章队列</h2><p>按创建时间倒序 · 共 {total} 篇文章</p></div><button className="filter-btn" onClick={() => void loadPage(page)} disabled={loading}><RefreshCw size={14}/> 刷新</button></div>{loading ? <div className="empty-state">正在加载文章队列...</div> : articles.length === 0 ? <div className="empty-state">暂无文章，去写文章生成内容后发布。</div> : articles.map((article, index) => <div className="queue-item article-queue-item" key={article.articleId}><div className={`queue-cover ${article.coverUrl ? "has-image" : ["lavender", "peach", "mint", "blue"][index % 4]}`}>{article.coverUrl ? <img src={article.coverUrl} alt=""/> : <div className="cover-orb"/>}</div><div className="queue-info"><span className={`pill ${article.publishStatus === "已发布" ? "success" : "pending"}`}>{article.publishStatus}</span><b>{article.title}</b><small>{article.style} · 创建于 {formatArticleCreatedAt(article.createdAt)}</small></div><div className="queue-actions">{article.publishStatus === "未发布" && <button className="queue-action" onClick={() => onPublishArticle(article.articleId)}>发布</button>}<button className="queue-delete" onClick={() => void removeArticle(article)} disabled={deletingId === article.articleId}>{deletingId === article.articleId ? "删除中..." : <><Trash2 size={14}/> 删除</>}</button></div></div>)}<div className="pagination queue-pagination"><span>第 {page} / {totalPages} 页</span><button disabled={loading || page <= 1} onClick={() => void loadPage(page - 1)}>上一页</button><button disabled={loading || page >= totalPages} onClick={() => void loadPage(page + 1)}>下一页</button></div></div></div></div>;
 }
 
-function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, running, start, generated, humanized, setHumanized, images, setImages, article, setArticle, notify }: any) {
+function WritePage({ topic, setTopic, style, styleId, setStyleId, articleStyles, stylesLoading, stylesError, searchOn, setSearchOn, running, start, generated, humanized, setHumanized, images, setImages, article, setArticle, notify }: any) {
   const [operation, setOperation] = useState<"humanize" | "images" | "publish" | null>(null);
   const [progress, setProgress] = useState(0);
   const [previewTab, setPreviewTab] = useState<"article" | "humanized" | "compare" | "layout" | "images" | "research">("article");
@@ -334,7 +354,7 @@ function WritePage({ topic, setTopic, style, setStyle, searchOn, setSearchOn, ru
   const operationLabel = operation === "humanize" ? "正在进行 AI 去痕处理" : operation === "images" ? "正在生成封面与段落图" : "正在发布到微信公众号";
   const currentStep = images ? 3 : humanized ? 2 : generated ? 1 : 0;
   return <div className="page write-page"><div className="page-heading"><div><p className="eyebrow">创作工作台</p><h1>写一篇新文章</h1><p className="hero-sub">把一个想法，变成值得分享的内容。</p></div><div className="autosave"><span className="green-dot"/> 自动保存已开启</div></div><div className="stepper">{steps.map((s:string,i:number)=><div className={i===currentStep ? "step active" : i<currentStep ? "step done" : "step"} key={s}><span>{i<currentStep?<Check size={13}/>:i+1}</span>{s}{i<steps.length-1&&<i/>}</div>)}</div>
-    <div className="write-layout"><div className="write-main"><div className="panel"><div className="panel-title"><div><h2>告诉我你想写什么</h2><p>描述越具体，生成的内容越贴近你的想法。</p></div><span className="tip"><Sparkles size={15}/> AI 辅助</span></div><label>文章主题</label><textarea value={topic} onChange={(e:any)=>setTopic(e.target.value)} rows={3}/><div className="label-row"><label>写作风格</label><span>{style === "高流量 / 爆款" ? "推荐" : ""}</span></div><div className="style-grid">{styles.map(([name, length, desc])=><button className={style===name?"style-option selected":"style-option"} key={name} onClick={()=>setStyle(name)}><span className="radio">{style===name&&<i/>}</span><div><b>{name}</b><small>{length} · {desc}</small></div></button>)}</div><div className="option-row"><div className="option-label"><div className="option-icon"><Search size={17}/></div><div><b>先搜索资料再写作</b><small>调用 Firecrawl 获取最新信息，让文章更有依据</small></div></div><button className={searchOn?"toggle on":"toggle"} onClick={()=>setSearchOn(!searchOn)}><i/></button></div><button className="generate-btn" onClick={start} disabled={running || Boolean(operation)}>{running?<><RefreshCw className="spin" size={18}/> 正在生成中...</>:<><Sparkles size={18}/> 开始生成文章 <span>⌘ Enter</span></>}</button></div></div><aside className="write-side"><div className="side-card"><div className="side-card-title"><Sparkles size={16}/> 本次生成会包含</div>{[[<FileText size={16}/> ,"3–6 个备选标题"],[<BookOpen size={16}/> ,"完整 Markdown 文章"],[<LayoutDashboard size={16}/> ,"结构化排版建议"],[<Clock3 size={16}/> ,"预计 2–4 分钟"]].map(([icon,text],i)=><div className="include-row" key={i}>{icon}<span>{text}</span><Check size={15}/></div>)}</div><div className="side-card tips-card"><div className="side-card-title"><Bot size={16}/> 写作小贴士</div><p>好的主题通常包含「对象 + 场景 + 结果」。比如：</p><div className="example">“帮我写一篇给产品经理看的，关于 AI 提效的实操指南”</div></div></aside></div>
+    <div className="write-layout"><div className="write-main"><div className="panel"><div className="panel-title"><div><h2>告诉我你想写什么</h2><p>描述越具体，生成的内容越贴近你的想法。</p></div><span className="tip"><Sparkles size={15}/> AI 辅助</span></div><label>文章主题</label><textarea value={topic} onChange={(e:any)=>setTopic(e.target.value)} rows={3}/><div className="label-row"><label>写作风格</label><span>{styleId === defaultStyleId ? "推荐" : ""}</span></div><div className="style-grid">{stylesLoading ? <div className="style-state">正在加载文章风格...</div> : stylesError ? <div className="style-state error">{stylesError}</div> : articleStyles.map((item: ArticleStyle)=><button className={styleId===item.id?"style-option selected":"style-option"} key={item.id} onClick={()=>setStyleId(item.id)}><span className="radio">{styleId===item.id&&<i/>}</span><div><b>{item.title}</b><small>{item.summary || "查看完整风格指南"}</small></div></button>)}</div><div className="option-row"><div className="option-label"><div className="option-icon"><Search size={17}/></div><div><b>先搜索资料再写作</b><small>调用 Firecrawl 获取最新信息，让文章更有依据</small></div></div><button className={searchOn?"toggle on":"toggle"} onClick={()=>setSearchOn(!searchOn)}><i/></button></div><button className="generate-btn" onClick={start} disabled={running || Boolean(operation) || stylesLoading || !articleStyles.length}>{running?<><RefreshCw className="spin" size={18}/> 正在生成中...</>:<><Sparkles size={18}/> 开始生成文章 <span>⌘ Enter</span></>}</button></div></div><aside className="write-side"><div className="side-card"><div className="side-card-title"><Sparkles size={16}/> 本次生成会包含</div>{[[<FileText size={16}/> ,"3–6 个备选标题"],[<BookOpen size={16}/> ,"完整 Markdown 文章"],[<LayoutDashboard size={16}/> ,"结构化排版建议"],[<Clock3 size={16}/> ,"预计 2–4 分钟"]].map(([icon,text],i)=><div className="include-row" key={i}>{icon}<span>{text}</span><Check size={15}/></div>)}</div><div className="side-card tips-card"><div className="side-card-title"><Bot size={16}/> 写作小贴士</div><p>好的主题通常包含「对象 + 场景 + 结果」。比如：</p><div className="example">“帮我写一篇给产品经理看的，关于 AI 提效的实操指南”</div></div></aside></div>
     {generated && <div className="result-panel"><div className="result-header"><div className="result-title-block"><span className="pill success">已生成</span><h2>{displayTitle}</h2><p>{style} · {(article?.content || "").length.toLocaleString()} 字 · {titleOptions.length || 3} 个备选标题</p><div className="title-options" aria-label="备选标题">{titleOptions.map((title, index) => <button key={`${title}-${index}`} className={displayTitle === title ? "title-option selected" : "title-option"} onClick={() => { setArticle({ ...article, selectedTitle: title }); }}>{title}</button>)}</div></div><button className="ghost-btn" onClick={start} disabled={running || Boolean(operation)}><RefreshCw size={16}/> 重新生成</button></div><div className="result-actions"><div className="action-task"><button className={humanized?"action active":"action"} onClick={humanized?()=>{setPreviewTab("humanized");notify("已显示去痕文章")}:handleHumanize} disabled={running || Boolean(operation)}><Wand2 size={16}/> {humanized?"查看 AI 去痕":"AI 去痕处理"}</button></div><div className="action-task"><button className={images?"action active":"action"} onClick={() => handleImages()} disabled={running || Boolean(operation)}><ImageIcon size={16}/> {images?"重新生成封面与配图":"生成封面与配图"}</button></div><button className="publish-btn" onClick={handlePublish} disabled={running || Boolean(operation)}><Send size={16}/> 发布到微信公众号</button></div>{operation && <div className="result-operation-progress"><div><span style={{width:`${progress}%`}}/></div><small>{operationLabel}… {progress}%</small></div>}<div className="preview-tabs"><button className={previewTab==="article"?"active":""} onClick={()=>setPreviewTab("article")}>文章预览</button>{humanized && <button className={previewTab==="humanized"?"active":""} onClick={()=>setPreviewTab("humanized")}>AI 去痕</button>}{humanized && <button className={previewTab==="compare"?"active":""} onClick={()=>setPreviewTab("compare")}>对比原文</button>}{article?.firecrawlSearched && <button className={previewTab==="research"?"active":""} onClick={()=>setPreviewTab("research")}>搜索资料{firecrawlSources.length ? ` (${firecrawlSources.length})` : ""}</button>}<button className={previewTab==="layout"?"active":""} onClick={()=>setPreviewTab("layout")}>排版预览</button><button className={previewTab==="images"?"active":""} onClick={()=>setPreviewTab("images")}>文章配图{imagePlans.length ? ` (${imagePlans.length + (article?.coverPrompt ? 1 : 0)})` : ""}</button></div>{previewTab!=="layout" && previewTab!=="images" && previewTab!=="research" && <div className="format-toggle"><button className={viewMode==="rendered"?"active":""} onClick={()=>setViewMode("rendered")}>样式预览</button><button className={viewMode==="markdown"?"active":""} onClick={()=>setViewMode("markdown")}>Markdown 原文</button></div>}{previewTab==="research" ? <div className="research-results"><h3>Firecrawl 搜索资料</h3>{firecrawlSources.length ? <div className="research-source-list">{firecrawlSources.map((source: any, index: number) => <a className="research-source" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}><b>{source.title || source.url}</b>{source.description && <p>{sourceSummary(source.description)}</p>}<small>{source.url}</small></a>)}</div> : <p>本次搜索未返回可用资料。</p>}</div> : previewTab==="images" ? <ArticleImagesTab article={article} imagePlans={imagePlans} generating={operation === "images"} onGenerate={handleImages}/> : <div key={`${previewTab}-${displayTitle}-${article?.content || ""}`} className={previewTab==="compare"?"compare-preview":"article-preview"}>{previewTab!=="layout" && <div className="preview-cover"><h3>{displayTitle}</h3></div>}{previewTab==="compare" ? <div className="compare-columns">{[ ["原文", article?.content || ""], ["AI 去痕", article?.humanizedContent || ""] ].map(([label, content])=><div key={label as string}><small>{label}</small><div className="article-preview compare-article">{renderContent(content as string)}</div></div>)}</div> : previewTab==="layout" ? <>{article?.imageUrl && <figure className="layout-cover-image"><img src={article.imageUrl} alt="文章封面"/></figure>}{renderMarkdown(displayContent || article?.content || "暂无内容")}</> : renderContent(displayContent || "")}</div>}</div>}
   </div>;
 }
@@ -374,7 +394,7 @@ function RequestLogsPage() {
 }
 
 function SettingsPage({ notify }: { notify: (s:string)=>void }) {
-  const [tab, setTab] = useState<"ai" | "platform">("ai");
+  const [tab, setTab] = useState<"ai" | "platform" | "style">("ai");
   const [saved, setSaved] = useState<Record<string, string>>({});
   const [configured, setConfigured] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
@@ -417,13 +437,37 @@ function SettingsPage({ notify }: { notify: (s:string)=>void }) {
   const configuredLabel = (key: string) => configured[key] ? <><span className="green-dot"/> 已配置</> : "未配置";
   return <div className="page settings-page">
     <div className="page-heading"><div><p className="eyebrow">配置中心</p><h1>让墨稿更懂你的工作流</h1><p className="hero-sub">配置保存到本地 SQLite；密钥不会在页面回显。</p></div><button className="save-btn" onClick={() => void persist()} disabled={saving}><Check size={16}/>{saving ? "保存中..." : "保存配置"}</button></div>
-    <div className="settings-tabs"><button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><Bot size={16}/> AI 服务</button><button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}><KeyRound size={16}/> 平台密钥</button></div>
+    <div className="settings-tabs"><button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}><Bot size={16}/> AI 服务</button><button className={tab === "platform" ? "active" : ""} onClick={() => setTab("platform")}><KeyRound size={16}/> 平台密钥</button><button className={tab === "style" ? "active" : ""} onClick={() => setTab("style")}><FileText size={16}/> 文章风格</button></div>
     {tab === "ai" ? <div className="settings-grid">
       <div className="panel config-panel"><div className="panel-title"><div><h2>文本模型</h2><p>用于文章生成、去痕与标题创作。</p></div><span className={configured.textKey ? "connected" : "connected muted"}>{configuredLabel("textKey")}</span></div><label>中转站 Base URL</label><div className="input-icon"><Link2 size={16}/><input value={value("textBase", "https://fast.sbbbbbbbbb.xyz/v1")} onChange={(event) => save("textBase", event.target.value)}/></div><label>API Key</label>{secretInput("textKey", "API Key")}<label>模型</label>{modelSelector("text", "textModel", "gpt-5.6-terra")}<div className="config-actions"><button className="test-btn" onClick={() => void getModels("text")} disabled={loadingModels === "text"}>{loadingModels === "text" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => void test("文本模型")}>测试连接 <ChevronRight size={15}/></button></div></div>
       <div className="panel config-panel"><div className="panel-title"><div><h2>图片模型</h2><p>用于封面与正文段落配图。</p></div><span className={configured.imageKey ? "connected" : "connected muted"}>{configuredLabel("imageKey")}</span></div><label>图片接口地址</label><div className="input-icon"><Link2 size={16}/><input value={value("imageUrl", "https://fast.sbbbbbbbbb.xyz/v1/images/generations")} onChange={(event) => save("imageUrl", event.target.value)}/></div><label>API Key</label>{secretInput("imageKey", "API Key")}<label>模型</label>{modelSelector("image", "imageModel", "gpt-image-2.5-flare")}<div className="config-actions"><button className="test-btn" onClick={() => void getModels("image")} disabled={loadingModels === "image"}>{loadingModels === "image" ? "正在获取..." : "获取模型"} <RefreshCw size={15}/></button><button className="test-btn" onClick={() => void test("图片模型")}>测试连接 <ChevronRight size={15}/></button></div></div>
       <div className="panel config-panel firecrawl"><div className="panel-title"><div><h2><Search size={18}/> Firecrawl 搜索</h2><p>为文章生成提供实时资料。</p></div><span className={configured.firecrawlKey ? "connected" : "connected muted"}>{configuredLabel("firecrawlKey")}</span></div><label>Firecrawl API Key</label>{secretInput("firecrawlKey", "Firecrawl API Key")}<div className="firecrawl-foot"><span><Check size={15}/> 搜索结果自动附加来源</span><button className="test-btn" onClick={() => void test("Firecrawl")}>测试连接 <ChevronRight size={15}/></button></div></div>
       <div className="panel config-panel zhihu-config"><div className="panel-title"><div><h2><Flame size={18}/> 知乎数据</h2><p>填写知乎数据开放平台 Access Secret。</p></div><span className={configured.zhihuAccessSecret ? "connected" : "connected muted"}>{configuredLabel("zhihuAccessSecret")}</span></div><label>知乎 Access Secret</label>{secretInput("zhihuAccessSecret", "知乎 Access Secret")}<div className="firecrawl-foot"><span><Check size={15}/> 密钥只会保存在本地数据库</span><button className="test-btn" onClick={() => void test("知乎数据")}>测试连接 <ChevronRight size={15}/></button></div></div>
-    </div> : <ConfigPlatforms values={saved} configured={configured} update={save} saving={saving} onSave={persist}/>}
+    </div> : tab === "style" ? <ArticleStyleSettings/> : <ConfigPlatforms values={saved} configured={configured} update={save} saving={saving} onSave={persist}/>}
+  </div>;
+}
+
+function ArticleStyleSettings() {
+  const [styles, setStyles] = useState<ArticleStyle[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => { void (async () => {
+    try {
+      const response = await fetch("/api/article-styles", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "读取文章风格失败");
+      const loaded = Array.isArray(data.styles) ? data.styles as ArticleStyle[] : [];
+      setStyles(loaded);
+      setSelectedId((loaded.find((item) => item.id === defaultStyleId) || loaded[0])?.id || "");
+      if (!loaded.length) setError("当前没有可用的文章风格文件");
+    } catch (loadError: any) { setError(loadError.message || "读取文章风格失败"); }
+    finally { setLoading(false); }
+  })(); }, []);
+  const selected = styles.find((item) => item.id === selectedId);
+  return <div className="style-settings">
+    <div className="style-settings-list panel"><div className="panel-title"><div><h2>文章风格 <span className="style-count">{styles.length} 个</span></h2><p>读取项目 article_style 目录中的 Markdown 指南。</p></div></div>{loading ? <div className="empty-state">正在读取文章风格...</div> : error ? <div className="empty-state">{error}</div> : styles.map((item) => <button key={item.id} className={selectedId === item.id ? "article-style-item selected" : "article-style-item"} onClick={() => setSelectedId(item.id)}><b>{item.title}</b><small>{item.summary || item.id}</small></button>)}</div>
+    <div className="panel style-markdown-panel">{selected ? <><div className="panel-title"><div><h2>{selected.title}</h2><p>{selected.id} · 只读预览</p></div></div><div className="style-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.content}</ReactMarkdown></div></> : <div className="empty-state">选择一个文章风格查看完整 Markdown 指南。</div>}</div>
   </div>;
 }
 
