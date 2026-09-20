@@ -42,6 +42,18 @@ export function getDatabase() {
     published_at TEXT
   );
   CREATE INDEX IF NOT EXISTS articles_created_at_idx ON articles(created_at DESC);
+  CREATE TABLE IF NOT EXISTS material_assets (
+    id TEXT PRIMARY KEY,
+    original_filename TEXT NOT NULL,
+    storage_filename TEXT NOT NULL UNIQUE,
+    material_type TEXT NOT NULL CHECK(material_type IN ('cover', 'paragraph', 'ai')),
+    size_bytes INTEGER NOT NULL,
+    format TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS material_assets_created_at_idx ON material_assets(created_at DESC);
+  CREATE INDEX IF NOT EXISTS material_assets_type_idx ON material_assets(material_type, created_at DESC);
   CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,

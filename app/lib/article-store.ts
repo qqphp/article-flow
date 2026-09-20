@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { getDatabase } from "./database";
+import { readMaterialFile, saveGeneratedMaterial } from "./material-store";
 
 export type ResearchSource = { title?: string; url: string; description?: string };
 export type ParagraphImage = { url?: string; filePath?: string; anchor?: string; prompt: string; error?: string };
@@ -419,11 +420,47 @@ export async function saveArticleImage(articleId: string, sourceUrl: string, nam
   const safeName = name.replace(/[^a-z0-9-_]/gi, "-") || "image";
   const filePath = path.join(article.directory, "assets", `${safeName}${extensionFrom(response.headers.get("content-type"), sourceUrl)}`);
   await fs.writeFile(filePath, Buffer.from(await response.arrayBuffer()));
+  await saveGeneratedMaterial(filePath);
   if (safeName === "cover") {
     getDatabase().prepare("UPDATE articles SET cover_path = ?, cover_image_url = ? WHERE id = ?")
       .run(filePath, assetUrl(articleId, filePath), articleId);
   }
   return filePath;
+}
+
+export async function replaceArticleImageWithMaterial(articleId: string, target: { type: "cover" } | { type: "paragraph"; index: number }, materialId: string) {
+  const article = getArticleRecord(articleId);
+  if (!article?.directory) return null;
+  const material = await readMaterialFile(materialId);
+  if (!material) throw new Error("素材不存在或文件无法读取");
+  const expectedType = target.type === "cover" ? "cover" : "paragraph";
+  if (material.asset.type !== expectedType) throw new Error(target.type === "cover" ? "只能使用封面图素材替换封面" : "只能使用段落配图素材替换段落图");
+  const imageState = await readArticleImageState(articleId);
+  if (!imageState) throw new Error("请先生成封面与配图");
+  if (target.type === "paragraph" && (!Number.isInteger(target.index) || target.index < 0 || target.index >= imageState.paragraphImages.length)) {
+    throw new Error("段落配图不存在");
+  }
+  const source = await readArticleSource(articleId, true);
+  if (!source?.content.trim()) throw new Error("文章 Markdown 文件不存在或内容为空");
+  const assetsDirectory = path.join(article.directory, "assets");
+  const name = target.type === "cover" ? "cover" : `paragraph-${target.index + 1}`;
+  const existing = await fs.readdir(assetsDirectory).catch(() => [] as string[]);
+  await Promise.all(existing
+    .filter((filename) => new RegExp(`^${name}\\.(png|jpg|jpeg|webp)$`, "i").test(filename))
+    .map((filename) => fs.unlink(path.join(assetsDirectory, filename))));
+  const filePath = path.join(assetsDirectory, `${name}.${material.asset.format}`);
+  await fs.copyFile(material.filePath, filePath);
+  let cover: CoverImage = imageState.cover;
+  const paragraphImages = [...imageState.paragraphImages];
+  if (target.type === "cover") {
+    cover = { prompt: cover.prompt, filePath, url: articleAssetUrl(articleId, filePath) };
+  } else {
+    const current = paragraphImages[target.index];
+    paragraphImages[target.index] = { prompt: current.prompt, anchor: current.anchor, filePath, url: articleAssetUrl(articleId, filePath) };
+  }
+  const layout = await saveArticleLayout(articleId, source.content, cover, paragraphImages);
+  if (!layout) throw new Error("无法保存排版预览 Markdown");
+  return readArticle(articleId);
 }
 
 export function articleAssetUrl(articleId: string, filePath: string) {

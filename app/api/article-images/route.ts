@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { articleAssetUrl, beginArticleImageGeneration, CoverImage, ParagraphImage, readArticle, readArticleImageState, readArticleSource, saveArticleImage, saveArticleLayout } from "../../lib/article-store";
+import { articleAssetUrl, beginArticleImageGeneration, CoverImage, ParagraphImage, readArticle, readArticleImageState, readArticleSource, replaceArticleImageWithMaterial, saveArticleImage, saveArticleLayout } from "../../lib/article-store";
 import { generateImage } from "../../lib/image-generation";
 import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
@@ -54,8 +54,18 @@ async function generateAndSaveImage(articleId: string, prompt: string, size: str
 }
 
 export async function POST(request: Request) {
-  const { title: requestedTitle, articleId, mode = "all", target } = await request.json() as { title?: string; articleId?: string; mode?: "all" | "single"; target?: ImageTarget };
+  const { title: requestedTitle, articleId, mode = "all", target, materialId } = await request.json() as { title?: string; articleId?: string; mode?: "all" | "single" | "replace"; target?: ImageTarget; materialId?: string };
   if (!articleId) return NextResponse.json({ error: "缺少文章存档，无法保存本地图片" }, { status: 400 });
+  if (mode === "replace") {
+    if (!target || !materialId) return NextResponse.json({ error: "缺少图片位置或素材" }, { status: 400 });
+    try {
+      const article = await replaceArticleImageWithMaterial(articleId, target, materialId);
+      if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
+      return NextResponse.json({ article, layoutContent: article.layoutContent, coverUrl: article.imageUrl, paragraphImages: article.paragraphImages, assetVersion: `${Date.now()}-${materialId}`, failed: 0 });
+    } catch (error: any) {
+      return NextResponse.json({ error: error.message || "替换素材失败" }, { status: 400 });
+    }
+  }
   const source = await readArticleSource(articleId, true);
   if (!source?.content.trim()) return NextResponse.json({ error: "文章 Markdown 文件不存在或内容为空" }, { status: 404 });
   const title = requestedTitle?.trim() || source.article.title;

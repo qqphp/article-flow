@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Check, ChevronRight, CircleHelp, Clock3, Eye, FileText, Flame, Image as ImageIcon, KeyRound, LayoutDashboard, Link2, Menu, MoreHorizontal, PenLine, Play, Plus, RefreshCw, Rocket, Search, Send, Settings2, Sparkles, Trash2, Wand2, X, Zap, ScrollText } from "lucide-react";
+import { BookOpen, Bot, Check, ChevronRight, CircleHelp, Clock3, Download, Eye, FileText, Flame, Image as ImageIcon, KeyRound, LayoutDashboard, Link2, Menu, MoreHorizontal, PenLine, Play, Plus, RefreshCw, Rocket, Search, Send, Settings2, Sparkles, Trash2, Wand2, X, Zap, ScrollText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ZhihuDataPage from "./zhihu-data-page";
@@ -221,27 +221,95 @@ function ArticleCard({ title, tag, status, time, color, coverUrl, wordCount, ima
   </button>;
 }
 
-type Asset = { name: string; type: "封面图" | "段落配图"; size: string; color: string; url?: string };
-function AssetsPage({ notify }: { notify: (s: string) => void }) {
-  const [assets, setAssets] = useState<Asset[]>([
-    { name: "workflow-cover.png", type: "封面图", size: "1.2 MB", color: "lavender" },
-    { name: "input-system.png", type: "段落配图", size: "860 KB", color: "peach" },
-    { name: "ai-tools-roundup.png", type: "封面图", size: "1.5 MB", color: "mint" },
-    { name: "attention-map.png", type: "段落配图", size: "920 KB", color: "blue" },
-  ]);
-  const [tab, setTab] = useState<"全部" | "封面图" | "段落配图">("全部");
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const onFiles = (files: FileList | null) => {
-    if (!files?.length) return;
-    const additions = Array.from(files).filter((file) => file.type.startsWith("image/")).map((file, index) => ({
-      name: file.name, type: index % 2 === 0 ? "封面图" as const : "段落配图" as const, size: `${Math.max(1, Math.round(file.size / 1024))} KB`, color: ["lavender", "peach", "mint", "blue"][assets.length % 4], url: URL.createObjectURL(file),
-    }));
-    setAssets((current) => [...additions, ...current]);
-    notify(`已添加 ${additions.length} 个素材`);
+type MaterialType = "cover" | "paragraph" | "ai";
+type Material = { id: string; originalFilename: string; storageFilename: string; type: MaterialType; sizeBytes: number; format: string; createdAt: string; url: string };
+const materialTypeLabel: Record<MaterialType, string> = { cover: "封面图", paragraph: "段落配图", ai: "文章AI配图" };
+function formatMaterialSize(sizeBytes: number) {
+  return sizeBytes >= 1024 * 1024 ? `${(sizeBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}
+function withAssetVersion(url: string, version: string) {
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`;
+}
+function withArticleAssetVersion(article: any, version: string) {
+  const versionedLayout = typeof article?.layoutContent === "string"
+    ? article.layoutContent.replace(/\/api\/articles\/[^/\s)]+\/assets\/[^)\s?]+/g, (url: string) => withAssetVersion(url, version))
+    : article?.layoutContent;
+  return {
+    ...article,
+    imageUrl: article?.imageUrl ? withAssetVersion(article.imageUrl, version) : article?.imageUrl,
+    paragraphImages: Array.isArray(article?.paragraphImages) ? article.paragraphImages.map((image: any) => image?.url ? { ...image, url: withAssetVersion(image.url, version) } : image) : article?.paragraphImages,
+    layoutContent: versionedLayout,
   };
-  const filtered = assets.filter((asset) => (tab === "全部" || asset.type === tab) && asset.name.toLowerCase().includes(query.toLowerCase()));
-  return <div className="page"><div className="page-heading"><div><p className="eyebrow">内容资产</p><h1>素材库</h1><p className="hero-sub">统一管理文章封面、段落插图和上传素材。</p></div><><input ref={inputRef} type="file" accept="image/*" multiple hidden onChange={(event) => onFiles(event.target.files)}/><button className="primary-btn" onClick={() => inputRef.current?.click()}><Plus size={17}/> 上传素材</button></></div><div className="asset-toolbar"><div className="asset-tabs">{(["全部", "封面图", "段落配图"] as const).map((name) => <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>{name} <b>{name === "全部" ? assets.length : assets.filter((asset) => asset.type === name).length}</b></button>)}</div><label className="filter-btn"><Search size={15}/><input aria-label="搜索素材" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材"/></label></div><div className="asset-grid">{filtered.map((asset) => <div className="asset-card" key={`${asset.name}-${asset.url || "seed"}`}><div className={`asset-thumb ${asset.color}`}>{asset.url ? <img src={asset.url} alt={asset.name}/> : <><div className="cover-orb"/><ImageIcon size={20}/></>}</div><div className="asset-info"><b>{asset.name}</b><small>{asset.type} · {asset.size}</small></div><button className="asset-use" onClick={() => notify(asset.url ? "素材已就绪，可用于文章配图" : `已复制 ${asset.name} 的使用路径`)}><Link2 size={14}/> 使用</button></div>)}</div>{filtered.length === 0 && <div className="empty-state">没有找到匹配的素材</div>}</div>;
+}
+function AssetsPage({ notify }: { notify: (s: string) => void }) {
+  const [assets, setAssets] = useState<Material[]>([]);
+  const [tab, setTab] = useState<"全部" | MaterialType>("全部");
+  const [query, setQuery] = useState("");
+  const [uploadType, setUploadType] = useState<"cover" | "paragraph">("cover");
+  const [selectedAsset, setSelectedAsset] = useState<Material | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Material | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const loadAssets = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/materials");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "素材库加载失败");
+      setAssets(Array.isArray(data.materials) ? data.materials : []);
+    } catch (error: any) { notify(error.message || "素材库加载失败"); }
+    finally { setLoading(false); }
+  }, [notify]);
+  useEffect(() => { void loadAssets(); }, [loadAssets]);
+  const onFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.set("type", uploadType);
+      Array.from(files).forEach((file) => form.append("files", file));
+      const response = await fetch("/api/materials", { method: "POST", body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "上传素材失败");
+      await loadAssets();
+      notify(`已添加 ${Array.isArray(data.materials) ? data.materials.length : 0} 个素材`);
+    } catch (error: any) { notify(error.message || "上传素材失败"); }
+    finally { setUploading(false); if (inputRef.current) inputRef.current.value = ""; }
+  };
+  const deleteAsset = async () => {
+    if (!pendingDelete || deletingId) return;
+    setDeletingId(pendingDelete.id);
+    try {
+      const response = await fetch(`/api/materials/${encodeURIComponent(pendingDelete.id)}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "删除素材失败");
+      setAssets((current) => current.filter((asset) => asset.id !== pendingDelete.id));
+      setSelectedAsset((current) => current?.id === pendingDelete.id ? null : current);
+      notify("素材已删除");
+      setPendingDelete(null);
+    } catch (error: any) { notify(error.message || "删除素材失败"); }
+    finally { setDeletingId(null); }
+  };
+  const filtered = assets.filter((asset) => (tab === "全部" || asset.type === tab) && asset.originalFilename.toLowerCase().includes(query.toLowerCase()));
+  const tabs: Array<"全部" | MaterialType> = ["全部", "cover", "paragraph", "ai"];
+  return <div className="page">
+    <div className="page-heading"><div><p className="eyebrow">内容资产</p><h1>素材库</h1><p className="hero-sub">集中管理手动上传的封面、段落素材和文章生成的 AI 配图。</p></div><div className="material-upload-actions"><select value={uploadType} onChange={(event) => setUploadType(event.target.value as "cover" | "paragraph")} aria-label="上传素材类型"><option value="cover">封面图</option><option value="paragraph">段落配图</option></select><input ref={inputRef} type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" multiple hidden onChange={(event) => void onFiles(event.target.files)}/><button className="primary-btn" disabled={uploading} onClick={() => inputRef.current?.click()}><Plus size={17}/> {uploading ? "上传中..." : "上传素材"}</button></div></div>
+    <div className="asset-toolbar"><div className="asset-tabs">{tabs.map((type) => <button key={type} className={tab === type ? "active" : ""} onClick={() => setTab(type)}>{type === "全部" ? type : materialTypeLabel[type]} <b>{type === "全部" ? assets.length : assets.filter((asset) => asset.type === type).length}</b></button>)}</div><label className="filter-btn"><Search size={15}/><input aria-label="搜索素材" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材"/></label></div>
+    {loading ? <div className="empty-state">正在读取素材库...</div> : <div className="asset-grid">{filtered.map((asset) => <div className="asset-card" key={asset.id}><button className="asset-thumb material-thumb" onClick={() => setSelectedAsset(asset)}><img src={asset.url} alt={asset.originalFilename}/></button><div className="asset-info"><b title={asset.originalFilename}>{asset.originalFilename}</b><small>{materialTypeLabel[asset.type]} · {formatMaterialSize(asset.sizeBytes)} · {asset.format.toUpperCase()}</small></div><div className="asset-card-actions"><button className="asset-use" onClick={() => setSelectedAsset(asset)}><Eye size={14}/> 查看</button><button className="asset-use asset-delete" onClick={() => setPendingDelete(asset)}><Trash2 size={14}/> 删除</button></div></div>)}</div>}
+    {!loading && filtered.length === 0 && <div className="empty-state">没有找到匹配的素材</div>}
+    {selectedAsset && <MaterialPreviewModal asset={selectedAsset} onClose={() => setSelectedAsset(null)}/>}
+    {pendingDelete && <DeleteMaterialModal asset={pendingDelete} deleting={deletingId === pendingDelete.id} onClose={() => !deletingId && setPendingDelete(null)} onConfirm={() => void deleteAsset()}/>}
+  </div>;
+}
+
+function MaterialPreviewModal({ asset, onClose }: { asset: Material; onClose: () => void }) {
+  return <div className="request-modal-backdrop material-modal-backdrop" role="dialog" aria-modal="true" onMouseDown={onClose}><div className="request-modal material-preview-modal" onMouseDown={(event) => event.stopPropagation()}><div className="request-modal-head"><div><p className="eyebrow">素材预览</p><h2>{asset.originalFilename}</h2></div><button className="modal-close" onClick={onClose} aria-label="关闭"><X size={17}/></button></div><div className="material-preview-image"><img src={asset.url} alt={asset.originalFilename}/></div><div className="request-modal-meta"><span>{materialTypeLabel[asset.type]}</span><span>{formatMaterialSize(asset.sizeBytes)}</span><span>{asset.format.toUpperCase()}</span><span>{new Date(asset.createdAt).toLocaleString("zh-CN", { hour12: false })}</span></div><div className="material-preview-footer"><a className="asset-use" href={`${asset.url}?download=1`}><Download size={14}/> 下载原图</a></div></div></div>;
+}
+
+function DeleteMaterialModal({ asset, deleting, onClose, onConfirm }: { asset: Material; deleting: boolean; onClose: () => void; onConfirm: () => void }) {
+  return <div className="request-modal-backdrop material-modal-backdrop" role="dialog" aria-modal="true" onMouseDown={() => !deleting && onClose()}><div className="request-modal material-delete-modal" onMouseDown={(event) => event.stopPropagation()}><div className="request-modal-head"><div><p className="eyebrow">删除素材</p><h2>确认删除“{asset.originalFilename}”吗？</h2></div><button className="modal-close" onClick={onClose} disabled={deleting} aria-label="关闭"><X size={17}/></button></div><p className="material-delete-copy">将同时删除素材库文件和索引记录；已复制到文章目录的图片不会受影响。</p><div className="material-delete-actions"><button className="ghost-btn" onClick={onClose} disabled={deleting}>取消</button><button className="material-delete-confirm" onClick={onConfirm} disabled={deleting}><Trash2 size={15}/>{deleting ? "删除中..." : "确认删除"}</button></div></div></div>;
 }
 
 type QueueArticle = { articleId: string; title: string; style: string; publishStatus: "未发布" | "已发布"; coverUrl: string | null; createdAt: string };
@@ -297,6 +365,7 @@ function PublishPage({ notify, onWrite, onPublishArticle }: { notify: (s: string
 function WritePage({ topic, setTopic, style, styleId, setStyleId, articleStyles, stylesLoading, stylesError, searchOn, setSearchOn, running, start, generated, humanized, setHumanized, images, setImages, article, setArticle, notify }: any) {
   const [operation, setOperation] = useState<"humanize" | "images" | "publish" | null>(null);
   const [progress, setProgress] = useState(0);
+  const [materialTarget, setMaterialTarget] = useState<{ type: "cover" } | { type: "paragraph"; index: number } | null>(null);
   const [previewTab, setPreviewTab] = useState<"article" | "humanized" | "compare" | "layout" | "images" | "research">("article");
   const [viewMode, setViewMode] = useState<"rendered" | "markdown">("rendered");
   const displayTitle = article?.selectedTitle || article?.title || topic;
@@ -336,6 +405,20 @@ function WritePage({ topic, setTopic, style, styleId, setStyleId, articleStyles,
       notify(data.failed ? `已完成生成，${data.failed} 张图片失败，可单独再次生成` : target ? "图片生成完成" : "封面与段落图生成完成");
     } catch (error: any) { notify(error.message || "配图失败，请稍后重试"); } finally { finishOperation(); }
   };
+  const handleMaterialReplace = async (materialId: string) => {
+    if (!materialTarget || operation || running) return;
+    const target = materialTarget;
+    setMaterialTarget(null);
+    setOperation("images"); setProgress(18);
+    try {
+      const response = await fetch("/api/article-images", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ articleId: article?.articleId, mode: "replace", target, materialId }) });
+      const data = await response.json();
+      if (!response.ok || !data.article) throw new Error(data.error || "替换素材失败");
+      const updatedArticle = withArticleAssetVersion(data.article, data.assetVersion || `${Date.now()}-${materialId}`);
+      setArticle({ ...updatedArticle, selectedTitle: article.selectedTitle }); setImages(true); setPreviewTab("layout");
+      notify("已从素材库替换文章图片");
+    } catch (error: any) { notify(error.message || "替换素材失败"); } finally { finishOperation(); }
+  };
   const handlePublish = async () => {
     if (!article || operation || running) return;
     setOperation("publish"); setProgress(8);
@@ -355,15 +438,29 @@ function WritePage({ topic, setTopic, style, styleId, setStyleId, articleStyles,
   const currentStep = images ? 3 : humanized ? 2 : generated ? 1 : 0;
   return <div className="page write-page"><div className="page-heading"><div><p className="eyebrow">创作工作台</p><h1>写一篇新文章</h1><p className="hero-sub">把一个想法，变成值得分享的内容。</p></div><div className="autosave"><span className="green-dot"/> 自动保存已开启</div></div><div className="stepper">{steps.map((s:string,i:number)=><div className={i===currentStep ? "step active" : i<currentStep ? "step done" : "step"} key={s}><span>{i<currentStep?<Check size={13}/>:i+1}</span>{s}{i<steps.length-1&&<i/>}</div>)}</div>
     <div className="write-layout"><div className="write-main"><div className="panel"><div className="panel-title"><div><h2>告诉我你想写什么</h2><p>描述越具体，生成的内容越贴近你的想法。</p></div><span className="tip"><Sparkles size={15}/> AI 辅助</span></div><label>文章主题</label><textarea value={topic} onChange={(e:any)=>setTopic(e.target.value)} rows={3}/><div className="label-row"><label>写作风格</label><span>{styleId === defaultStyleId ? "推荐" : ""}</span></div><div className="style-grid">{stylesLoading ? <div className="style-state">正在加载文章风格...</div> : stylesError ? <div className="style-state error">{stylesError}</div> : articleStyles.map((item: ArticleStyle)=><button className={styleId===item.id?"style-option selected":"style-option"} key={item.id} onClick={()=>setStyleId(item.id)}><span className="radio">{styleId===item.id&&<i/>}</span><div><b>{item.title}</b><small>{item.summary || "查看完整风格指南"}</small></div></button>)}</div><div className="option-row"><div className="option-label"><div className="option-icon"><Search size={17}/></div><div><b>先搜索资料再写作</b><small>调用 Firecrawl 获取最新信息，让文章更有依据</small></div></div><button className={searchOn?"toggle on":"toggle"} onClick={()=>setSearchOn(!searchOn)}><i/></button></div><button className="generate-btn" onClick={start} disabled={running || Boolean(operation) || stylesLoading || !articleStyles.length}>{running?<><RefreshCw className="spin" size={18}/> 正在生成中...</>:<><Sparkles size={18}/> 开始生成文章 <span>⌘ Enter</span></>}</button></div></div><aside className="write-side"><div className="side-card"><div className="side-card-title"><Sparkles size={16}/> 本次生成会包含</div>{[[<FileText size={16}/> ,"3–6 个备选标题"],[<BookOpen size={16}/> ,"完整 Markdown 文章"],[<LayoutDashboard size={16}/> ,"结构化排版建议"],[<Clock3 size={16}/> ,"预计 2–4 分钟"]].map(([icon,text],i)=><div className="include-row" key={i}>{icon}<span>{text}</span><Check size={15}/></div>)}</div><div className="side-card tips-card"><div className="side-card-title"><Bot size={16}/> 写作小贴士</div><p>好的主题通常包含「对象 + 场景 + 结果」。比如：</p><div className="example">“帮我写一篇给产品经理看的，关于 AI 提效的实操指南”</div></div></aside></div>
-    {generated && <div className="result-panel"><div className="result-header"><div className="result-title-block"><span className="pill success">已生成</span><h2>{displayTitle}</h2><p>{style} · {(article?.content || "").length.toLocaleString()} 字 · {titleOptions.length || 3} 个备选标题</p><div className="title-options" aria-label="备选标题">{titleOptions.map((title, index) => <button key={`${title}-${index}`} className={displayTitle === title ? "title-option selected" : "title-option"} onClick={() => { setArticle({ ...article, selectedTitle: title }); }}>{title}</button>)}</div></div><button className="ghost-btn" onClick={start} disabled={running || Boolean(operation)}><RefreshCw size={16}/> 重新生成</button></div><div className="result-actions"><div className="action-task"><button className={humanized?"action active":"action"} onClick={humanized?()=>{setPreviewTab("humanized");notify("已显示去痕文章")}:handleHumanize} disabled={running || Boolean(operation)}><Wand2 size={16}/> {humanized?"查看 AI 去痕":"AI 去痕处理"}</button></div><div className="action-task"><button className={images?"action active":"action"} onClick={() => handleImages()} disabled={running || Boolean(operation)}><ImageIcon size={16}/> {images?"重新生成封面与配图":"生成封面与配图"}</button></div><button className="publish-btn" onClick={handlePublish} disabled={running || Boolean(operation)}><Send size={16}/> 发布到微信公众号</button></div>{operation && <div className="result-operation-progress"><div><span style={{width:`${progress}%`}}/></div><small>{operationLabel}… {progress}%</small></div>}<div className="preview-tabs"><button className={previewTab==="article"?"active":""} onClick={()=>setPreviewTab("article")}>文章预览</button>{humanized && <button className={previewTab==="humanized"?"active":""} onClick={()=>setPreviewTab("humanized")}>AI 去痕</button>}{humanized && <button className={previewTab==="compare"?"active":""} onClick={()=>setPreviewTab("compare")}>对比原文</button>}{article?.firecrawlSearched && <button className={previewTab==="research"?"active":""} onClick={()=>setPreviewTab("research")}>搜索资料{firecrawlSources.length ? ` (${firecrawlSources.length})` : ""}</button>}<button className={previewTab==="layout"?"active":""} onClick={()=>setPreviewTab("layout")}>排版预览</button><button className={previewTab==="images"?"active":""} onClick={()=>setPreviewTab("images")}>文章配图{imagePlans.length ? ` (${imagePlans.length + (article?.coverPrompt ? 1 : 0)})` : ""}</button></div>{previewTab!=="layout" && previewTab!=="images" && previewTab!=="research" && <div className="format-toggle"><button className={viewMode==="rendered"?"active":""} onClick={()=>setViewMode("rendered")}>样式预览</button><button className={viewMode==="markdown"?"active":""} onClick={()=>setViewMode("markdown")}>Markdown 原文</button></div>}{previewTab==="research" ? <div className="research-results"><h3>Firecrawl 搜索资料</h3>{firecrawlSources.length ? <div className="research-source-list">{firecrawlSources.map((source: any, index: number) => <a className="research-source" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}><b>{source.title || source.url}</b>{source.description && <p>{sourceSummary(source.description)}</p>}<small>{source.url}</small></a>)}</div> : <p>本次搜索未返回可用资料。</p>}</div> : previewTab==="images" ? <ArticleImagesTab article={article} imagePlans={imagePlans} generating={operation === "images"} onGenerate={handleImages}/> : <div key={`${previewTab}-${displayTitle}-${article?.content || ""}`} className={previewTab==="compare"?"compare-preview":"article-preview"}>{previewTab!=="layout" && <div className="preview-cover"><h3>{displayTitle}</h3></div>}{previewTab==="compare" ? <div className="compare-columns">{[ ["原文", article?.content || ""], ["AI 去痕", article?.humanizedContent || ""] ].map(([label, content])=><div key={label as string}><small>{label}</small><div className="article-preview compare-article">{renderContent(content as string)}</div></div>)}</div> : previewTab==="layout" ? <>{article?.imageUrl && <figure className="layout-cover-image"><img src={article.imageUrl} alt="文章封面"/></figure>}{renderMarkdown(displayContent || article?.content || "暂无内容")}</> : renderContent(displayContent || "")}</div>}</div>}
+    {generated && <div className="result-panel"><div className="result-header"><div className="result-title-block"><span className="pill success">已生成</span><h2>{displayTitle}</h2><p>{style} · {(article?.content || "").length.toLocaleString()} 字 · {titleOptions.length || 3} 个备选标题</p><div className="title-options" aria-label="备选标题">{titleOptions.map((title, index) => <button key={`${title}-${index}`} className={displayTitle === title ? "title-option selected" : "title-option"} onClick={() => { setArticle({ ...article, selectedTitle: title }); }}>{title}</button>)}</div></div><button className="ghost-btn" onClick={start} disabled={running || Boolean(operation)}><RefreshCw size={16}/> 重新生成</button></div><div className="result-actions"><div className="action-task"><button className={humanized?"action active":"action"} onClick={humanized?()=>{setPreviewTab("humanized");notify("已显示去痕文章")}:handleHumanize} disabled={running || Boolean(operation)}><Wand2 size={16}/> {humanized?"查看 AI 去痕":"AI 去痕处理"}</button></div><div className="action-task"><button className={images?"action active":"action"} onClick={() => handleImages()} disabled={running || Boolean(operation)}><ImageIcon size={16}/> {images?"重新生成封面与配图":"生成封面与配图"}</button></div><button className="publish-btn" onClick={handlePublish} disabled={running || Boolean(operation)}><Send size={16}/> 发布到微信公众号</button></div>{operation && <div className="result-operation-progress"><div><span style={{width:`${progress}%`}}/></div><small>{operationLabel}… {progress}%</small></div>}<div className="preview-tabs"><button className={previewTab==="article"?"active":""} onClick={()=>setPreviewTab("article")}>文章预览</button>{humanized && <button className={previewTab==="humanized"?"active":""} onClick={()=>setPreviewTab("humanized")}>AI 去痕</button>}{humanized && <button className={previewTab==="compare"?"active":""} onClick={()=>setPreviewTab("compare")}>对比原文</button>}{article?.firecrawlSearched && <button className={previewTab==="research"?"active":""} onClick={()=>setPreviewTab("research")}>搜索资料{firecrawlSources.length ? ` (${firecrawlSources.length})` : ""}</button>}<button className={previewTab==="layout"?"active":""} onClick={()=>setPreviewTab("layout")}>排版预览</button><button className={previewTab==="images"?"active":""} onClick={()=>setPreviewTab("images")}>文章配图{imagePlans.length ? ` (${imagePlans.length + (article?.coverPrompt ? 1 : 0)})` : ""}</button></div>{previewTab!=="layout" && previewTab!=="images" && previewTab!=="research" && <div className="format-toggle"><button className={viewMode==="rendered"?"active":""} onClick={()=>setViewMode("rendered")}>样式预览</button><button className={viewMode==="markdown"?"active":""} onClick={()=>setViewMode("markdown")}>Markdown 原文</button></div>}{previewTab==="research" ? <div className="research-results"><h3>Firecrawl 搜索资料</h3>{firecrawlSources.length ? <div className="research-source-list">{firecrawlSources.map((source: any, index: number) => <a className="research-source" href={source.url} target="_blank" rel="noreferrer" key={`${source.url}-${index}`}><b>{source.title || source.url}</b>{source.description && <p>{sourceSummary(source.description)}</p>}<small>{source.url}</small></a>)}</div> : <p>本次搜索未返回可用资料。</p>}</div> : previewTab==="images" ? <ArticleImagesTab article={article} imagePlans={imagePlans} generating={operation === "images"} onGenerate={handleImages} onChooseMaterial={setMaterialTarget}/> : <div key={`${previewTab}-${displayTitle}-${article?.content || ""}`} className={previewTab==="compare"?"compare-preview":"article-preview"}>{previewTab!=="layout" && <div className="preview-cover"><h3>{displayTitle}</h3></div>}{previewTab==="compare" ? <div className="compare-columns">{[ ["原文", article?.content || ""], ["AI 去痕", article?.humanizedContent || ""] ].map(([label, content])=><div key={label as string}><small>{label}</small><div className="article-preview compare-article">{renderContent(content as string)}</div></div>)}</div> : previewTab==="layout" ? <>{article?.imageUrl && <figure className="layout-cover-image"><img src={article.imageUrl} alt="文章封面"/></figure>}{renderMarkdown(displayContent || article?.content || "暂无内容")}</> : renderContent(displayContent || "")}</div>}</div>}
+    {materialTarget && <MaterialPickerModal type={materialTarget.type === "cover" ? "cover" : "paragraph"} onClose={() => setMaterialTarget(null)} onSelect={handleMaterialReplace}/>}
   </div>;
 }
 
-function ArticleImagesTab({ article, imagePlans, generating, onGenerate }: { article: any; imagePlans: any[]; generating: boolean; onGenerate: (target?: { type: "cover" } | { type: "paragraph"; index: number }) => void }) {
+function ArticleImagesTab({ article, imagePlans, generating, onGenerate, onChooseMaterial }: { article: any; imagePlans: any[]; generating: boolean; onGenerate: (target?: { type: "cover" } | { type: "paragraph"; index: number }) => void; onChooseMaterial: (target: { type: "cover" } | { type: "paragraph"; index: number }) => void }) {
   const coverStatus = article?.coverError ? "生成失败" : article?.imageUrl ? "已生成" : article?.coverPrompt ? "待生成" : "未规划";
   const actionLabel = (hasImage: boolean, error?: string) => error || !hasImage ? "生成图片" : "重新生成";
   if (!article?.coverPrompt && !imagePlans.length) return <div className="image-plans-empty"><ImageIcon size={20}/><p>尚未生成配图提示词</p><small>点击上方“生成封面与配图”，系统会先规划封面和段落配图。</small></div>;
-  return <section className="image-plans" aria-label="文章配图"><div className="image-plans-head"><div><p className="eyebrow">IMAGE PLAN</p><h3>封面与段落配图</h3><span>展示每张图的生成提示词；失败的图片可单独再次生成。</span></div><b>{(article?.coverPrompt ? 1 : 0) + imagePlans.length} 张计划图片</b></div><div className="image-plan-grid"><article className="image-plan-card cover"><div className="image-plan-preview">{article?.imageUrl ? <img src={article.imageUrl} alt="文章封面"/> : <div className="image-plan-placeholder"><ImageIcon size={24}/><span>{coverStatus}</span></div>}</div><div className="image-plan-content"><div className="image-plan-title"><span>封面图</span><i className={article?.coverError ? "failed" : article?.imageUrl ? "ready" : "pending"}>{coverStatus}</i></div><p className="image-plan-prompt">{article?.coverPrompt || "正在等待提示词"}</p>{article?.coverError && <small className="image-plan-error">{article.coverError}</small>}<button className="image-plan-action" onClick={() => onGenerate({ type: "cover" })} disabled={generating || !article?.coverPrompt}><RefreshCw size={14}/>{generating ? "生成中..." : actionLabel(Boolean(article?.imageUrl), article?.coverError)}</button></div></article>{imagePlans.map((image, index) => <article className="image-plan-card" key={`${image.prompt}-${index}`}><div className="image-plan-preview">{image.url ? <img src={image.url} alt={`段落配图 ${index + 1}`}/> : <div className="image-plan-placeholder"><ImageIcon size={21}/><span>{image.error ? "生成失败" : "待生成"}</span></div>}</div><div className="image-plan-content"><div className="image-plan-title"><span>段落图 {index + 1}</span><i className={image.error ? "failed" : image.url ? "ready" : "pending"}>{image.error ? "生成失败" : image.url ? "已生成" : "待生成"}</i></div>{image.anchor && <small className="image-plan-anchor">对应段落：{image.anchor}</small>}<p className="image-plan-prompt">{image.prompt}</p>{image.error && <small className="image-plan-error">{image.error}</small>}<button className="image-plan-action" onClick={() => onGenerate({ type: "paragraph", index })} disabled={generating || !image.prompt}><RefreshCw size={14}/>{generating ? "生成中..." : actionLabel(Boolean(image.url), image.error)}</button></div></article>)}</div></section>;
+  return <section className="image-plans" aria-label="文章配图"><div className="image-plans-head"><div><p className="eyebrow">IMAGE PLAN</p><h3>封面与段落配图</h3><span>展示每张图的生成提示词；失败的图片可单独再次生成或从素材库替换。</span></div><b>{(article?.coverPrompt ? 1 : 0) + imagePlans.length} 张计划图片</b></div><div className="image-plan-grid"><article className="image-plan-card cover"><div className="image-plan-preview">{article?.imageUrl ? <img src={article.imageUrl} alt="文章封面"/> : <div className="image-plan-placeholder"><ImageIcon size={24}/><span>{coverStatus}</span></div>}</div><div className="image-plan-content"><div className="image-plan-title"><span>封面图</span><i className={article?.coverError ? "failed" : article?.imageUrl ? "ready" : "pending"}>{coverStatus}</i></div><p className="image-plan-prompt">{article?.coverPrompt || "正在等待提示词"}</p>{article?.coverError && <small className="image-plan-error">{article.coverError}</small>}<div className="image-plan-actions"><button className="image-plan-action" onClick={() => onGenerate({ type: "cover" })} disabled={generating || !article?.coverPrompt}><RefreshCw size={14}/>{generating ? "生成中..." : actionLabel(Boolean(article?.imageUrl), article?.coverError)}</button><button className="image-plan-action" onClick={() => onChooseMaterial({ type: "cover" })} disabled={generating || !article?.imageUrl}><ImageIcon size={14}/> 从素材库替换</button></div></div></article>{imagePlans.map((image, index) => <article className="image-plan-card" key={`${image.prompt}-${index}`}><div className="image-plan-preview">{image.url ? <img src={image.url} alt={`段落配图 ${index + 1}`}/> : <div className="image-plan-placeholder"><ImageIcon size={21}/><span>{image.error ? "生成失败" : "待生成"}</span></div>}</div><div className="image-plan-content"><div className="image-plan-title"><span>段落图 {index + 1}</span><i className={image.error ? "failed" : image.url ? "ready" : "pending"}>{image.error ? "生成失败" : image.url ? "已生成" : "待生成"}</i></div>{image.anchor && <small className="image-plan-anchor">对应段落：{image.anchor}</small>}<p className="image-plan-prompt">{image.prompt}</p>{image.error && <small className="image-plan-error">{image.error}</small>}<div className="image-plan-actions"><button className="image-plan-action" onClick={() => onGenerate({ type: "paragraph", index })} disabled={generating || !image.prompt}><RefreshCw size={14}/>{generating ? "生成中..." : actionLabel(Boolean(image.url), image.error)}</button><button className="image-plan-action" onClick={() => onChooseMaterial({ type: "paragraph", index })} disabled={generating || !image.url}><ImageIcon size={14}/> 从素材库替换</button></div></div></article>)}</div></section>;
+}
+
+function MaterialPickerModal({ type, onClose, onSelect }: { type: "cover" | "paragraph"; onClose: () => void; onSelect: (materialId: string) => void }) {
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetch(`/api/materials?type=${type}`).then(async (response) => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "素材加载失败");
+      setMaterials(Array.isArray(data.materials) ? data.materials : []);
+    }).catch(() => setMaterials([])).finally(() => setLoading(false));
+  }, [type]);
+  return <div className="request-modal-backdrop material-modal-backdrop" role="dialog" aria-modal="true" onMouseDown={onClose}><div className="request-modal material-picker-modal" onMouseDown={(event) => event.stopPropagation()}><div className="request-modal-head"><div><p className="eyebrow">选择素材</p><h2>选择{materialTypeLabel[type]}</h2></div><button className="modal-close" onClick={onClose} aria-label="关闭"><X size={17}/></button></div>{loading ? <div className="empty-state">正在读取素材...</div> : materials.length ? <div className="material-picker-grid">{materials.map((material) => <button key={material.id} className="material-picker-card" onClick={() => onSelect(material.id)}><img src={material.url} alt={material.originalFilename}/><b>{material.originalFilename}</b><small>{formatMaterialSize(material.sizeBytes)} · {material.format.toUpperCase()}</small></button>)}</div> : <div className="empty-state">暂无可用于替换的{materialTypeLabel[type]}素材</div>}</div></div>;
 }
 
 function RequestLogsPage() {
