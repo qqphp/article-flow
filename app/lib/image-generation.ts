@@ -1,6 +1,7 @@
 import { appendRequestLog } from "./request-log";
 import { modelFetch } from "./model-fetch";
 import { getAppConfig } from "./config-store";
+import { mergeSignals } from "./abort";
 
 export function imageUrlFromResponse(data: unknown) {
   const image = (data as { data?: Array<{ url?: unknown; b64_json?: unknown }> } | null)?.data?.[0];
@@ -12,7 +13,7 @@ export function imageUrlFromResponse(data: unknown) {
   return null;
 }
 
-export async function generateImage(input: { prompt: string; size: string; operation: string }) {
+export async function generateImage(input: { prompt: string; size: string; operation: string; signal?: AbortSignal }) {
   const config = getAppConfig();
   const apiKey = config.imageKey;
   const endpoint = (config.imageUrl || `${config.textBase}/images/generations`).replace(/([^:]\/)\/+/g, "$1");
@@ -24,7 +25,7 @@ export async function generateImage(input: { prompt: string; size: string; opera
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
-    signal: AbortSignal.timeout(360000),
+    signal: mergeSignals(360000, input.signal),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw new Error(data?.error?.message || data?.error || data?.message || "图片生成服务返回错误");

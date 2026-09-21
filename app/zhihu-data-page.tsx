@@ -42,11 +42,12 @@ const ZHIDA_MODELS = [
   ["zhida-agent", "智能思考", "更完整的任务处理"],
 ] as const;
 
-async function zhihuPost(path: string, payload: Record<string, unknown> = {}) {
+async function zhihuPost(path: string, payload: Record<string, unknown> = {}, signal?: AbortSignal) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "请求失败");
@@ -84,15 +85,43 @@ function newIdempotencyKey(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function pollZhihuTask(path: string, taskId: string, onUpdate: (task: AsyncTask) => void) {
+function abortedError() {
+  return new DOMException("Aborted", "AbortError");
+}
+
+async function pollZhihuTask(path: string, taskId: string, onUpdate: (task: AsyncTask) => void, signal?: AbortSignal) {
   let current: AsyncTask | null = null;
   for (let attempt = 0; attempt < 150; attempt++) {
-    if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, TASK_POLL_MS));
-    current = await zhihuPost(path, { taskId }) as AsyncTask;
+    if (signal?.aborted) throw abortedError();
+    if (attempt > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          window.clearTimeout(timer);
+          reject(abortedError());
+        };
+        const timer = window.setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, TASK_POLL_MS);
+        if (!signal) return;
+        if (signal.aborted) {
+          window.clearTimeout(timer);
+          reject(abortedError());
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+    current = await zhihuPost(path, { taskId }, signal) as AsyncTask;
+    if (signal?.aborted) throw abortedError();
     onUpdate(current);
     if (current.taskStatus !== "pending" && current.taskStatus !== "running") return current;
   }
   throw new Error("任务等待超时，请稍后重试");
+}
+
+function isAbortError(error: unknown) {
+  return Boolean(error && typeof error === "object" && "name" in error && (error as { name: string }).name === "AbortError");
 }
 
 function Excerpt({ text }: { text: string }) {
@@ -446,14 +475,20 @@ function ZhidaTab({ notify }: { notify: (message: string) => void }) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [turns, loading]);
 
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
+
   const send = async () => {
     const question = input.trim();
     if (!question || loading) return;
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
     const userTurn: ChatTurn = { role: "user", content: question };
     const history = [...turns, userTurn];
     setTurns([...history, { role: "assistant", content: "", reasoning: "" }]);
@@ -466,6 +501,7 @@ function ZhidaTab({ notify }: { notify: (message: string) => void }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, messages, stream: true }),
+        signal: abort.signal,
       });
       const contentType = response.headers.get("content-type") || "";
       if (!response.ok || contentType.includes("application/json")) {
@@ -505,6 +541,7 @@ function ZhidaTab({ notify }: { notify: (message: string) => void }) {
         }
       }
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const message = error.message || "直答失败";
       notify(message);
       setTurns((current) => current.map((turn, index) => index === current.length - 1 ? { role: "assistant", content: message, error: true } : turn));
@@ -564,6 +601,7 @@ function TaskProgress({ task }: { task: AsyncTask | null }) {
 
 function PdfTab({ notify }: { notify: (message: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("");
@@ -572,9 +610,14 @@ function PdfTab({ notify }: { notify: (message: string) => void }) {
   const [summary, setSummary] = useState("");
   const [resultUrl, setResultUrl] = useState("");
 
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
+
   const parse = async () => {
     if (!file || running) return;
     if (file.size > 100 * 1024 * 1024) { notify("PDF 文件不能超过 100MB"); return; }
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
     setRunning(true);
     setTask(null);
     setPages([]);
@@ -584,29 +627,30 @@ function PdfTab({ notify }: { notify: (message: string) => void }) {
     try {
       const form = new FormData();
       form.append("file", file);
-      const uploadResponse = await fetch("/api/zhihu/pdf/upload", { method: "POST", body: form });
+      const uploadResponse = await fetch("/api/zhihu/pdf/upload", { method: "POST", body: form, signal: abort.signal });
       const uploaded = await uploadResponse.json().catch(() => ({}));
       if (!uploadResponse.ok) throw new Error(uploaded.error || "PDF 上传失败");
       setStatus("已上传，正在创建解析任务...");
-      const created = await zhihuPost("/api/zhihu/pdf/tasks", { fileId: uploaded.fileId, idempotencyKey: newIdempotencyKey("pdf") }) as AsyncTask;
+      const created = await zhihuPost("/api/zhihu/pdf/tasks", { fileId: uploaded.fileId, idempotencyKey: newIdempotencyKey("pdf") }, abort.signal) as AsyncTask;
       setTask(created);
       const current = created.taskStatus === "pending" || created.taskStatus === "running"
         ? await pollZhihuTask("/api/zhihu/pdf/status", created.taskId, (next) => {
           setTask(next);
           setStatus(next.taskStatus === "pending" ? "任务排队中..." : "正在解析 PDF...");
-        })
+        }, abort.signal)
         : created;
       if (current.taskStatus === "failed") throw new Error(current.error?.message || "PDF 解析失败");
       setSummary(current.result?.summary || "");
       setResultUrl(current.result?.url || "");
       if (current.result?.url) {
         setStatus("正在拉取解析结果...");
-        const payload = await zhihuPost("/api/zhihu/pdf/result", { url: current.result.url });
+        const payload = await zhihuPost("/api/zhihu/pdf/result", { url: current.result.url }, abort.signal);
         setPages(Array.isArray(payload.result?.pages) ? payload.result.pages : []);
       }
       setStatus("解析完成");
       notify("PDF 解析完成");
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const message = error.message || "PDF 解析失败";
       setStatus(message);
       notify(message);
@@ -659,26 +703,33 @@ function PptTab({ notify }: { notify: (message: string) => void }) {
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("");
   const [task, setTask] = useState<AsyncTask | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   const generate = async () => {
     const url = resourceUrl.trim();
     if (!url) { notify("请填写知乎回答或文章链接"); return; }
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
     setRunning(true);
     setTask(null);
     setStatus("正在创建 PPT 任务...");
     try {
-      const created = await zhihuPost("/api/zhihu/ppt/tasks", { resourceUrl: url, numPages, idempotencyKey: newIdempotencyKey("ppt") }) as AsyncTask;
+      const created = await zhihuPost("/api/zhihu/ppt/tasks", { resourceUrl: url, numPages, idempotencyKey: newIdempotencyKey("ppt") }, abort.signal) as AsyncTask;
       setTask(created);
       const current = created.taskStatus === "pending" || created.taskStatus === "running"
         ? await pollZhihuTask("/api/zhihu/ppt/status", created.taskId, (next) => {
           setTask(next);
           setStatus(next.taskStatus === "pending" ? "任务排队中..." : "正在生成 PPT...");
-        })
+        }, abort.signal)
         : created;
       if (current.taskStatus === "failed") throw new Error(current.error?.message || "PPT 生成失败");
       setStatus("PPT 已生成");
       notify("PPT 生成完成");
     } catch (error: any) {
+      if (isAbortError(error)) return;
       const message = error.message || "PPT 生成失败";
       setStatus(message);
       notify(message);

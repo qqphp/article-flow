@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { appendRequestLog } from "../../lib/request-log";
 import { modelFetch } from "../../lib/model-fetch";
 import { getAppConfig } from "../../lib/config-store";
+import { assertPublicHttpUrl } from "../../lib/public-url";
 
 type ModelsBody = { type?: "text" | "image"; baseUrl?: string; apiKey?: string };
 
@@ -18,6 +19,11 @@ export async function POST(request: Request) {
   const apiKey = body.apiKey?.trim() || (type === "image" ? config.imageKey : config.textKey);
   const baseUrl = body.baseUrl?.trim() || (type === "image" ? config.imageUrl || config.textBase : config.textBase);
   if (!baseUrl || !apiKey) return NextResponse.json({ error: "请先填写接口地址和 API Key" }, { status: 400 });
+  try {
+    await assertPublicHttpUrl(baseUrl, "模型接口地址");
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || "模型接口地址无效" }, { status: 400 });
+  }
   const endpoint = modelsEndpoint(baseUrl, type);
   await appendRequestLog({ type, operation: "获取可用模型", endpoint, model: "-", requestBody: { method: "GET" } });
   try {

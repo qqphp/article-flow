@@ -3,8 +3,14 @@ import { clearRequestLogs, readRequestLogs } from "../../lib/request-log";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  return NextResponse.json({ logs: await readRequestLogs() });
+export async function GET(request: Request) {
+  const params = new URL(request.url).searchParams;
+  return NextResponse.json(await readRequestLogs({
+    page: params.get("page"),
+    pageSize: params.get("pageSize"),
+    type: params.get("type") || undefined,
+    query: params.get("query") || undefined,
+  }));
 }
 
 export async function DELETE() {

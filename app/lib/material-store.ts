@@ -1,7 +1,9 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { getDatabase } from "./database";
+import { getDataDirectory, getDatabase, resolveDataPath, toStoredDataPath } from "./database";
+import { MATERIAL_MAX_PAGE_SIZE, MATERIAL_PAGE_SIZE } from "./material-limits";
+import { resolvePage } from "./pagination";
 
 export type MaterialType = "cover" | "paragraph" | "ai";
 export type MaterialAsset = {
@@ -27,7 +29,7 @@ type MaterialRow = {
   created_at: string;
 };
 
-const materialsDirectory = path.join(process.cwd(), "data", "materials");
+const materialsDirectory = path.join(getDataDirectory(), "materials");
 const imageFormats = new Set(["png", "jpg", "webp"]);
 
 function materialUrl(id: string) {
@@ -44,6 +46,12 @@ function detectImage(buffer: Buffer): { format: "png" | "jpg" | "webp"; contentT
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { format: "jpg", contentType: "image/jpeg" };
   if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return { format: "webp", contentType: "image/webp" };
   return null;
+}
+
+function contentTypeForFormat(format: MaterialAsset["format"]) {
+  if (format === "jpg") return "image/jpeg";
+  if (format === "webp") return "image/webp";
+  return "image/png";
 }
 
 function rowToAsset(row: MaterialRow): MaterialAsset {
@@ -79,12 +87,12 @@ export async function saveMaterial(input: { originalFilename: string; type: Mate
     getDatabase().prepare(`INSERT INTO material_assets
       (id, original_filename, storage_filename, material_type, size_bytes, format, storage_path, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, originalFilename, storageFilename, input.type, input.data.length, image.format, storagePath, createdAt);
+      .run(id, originalFilename, storageFilename, input.type, input.data.length, image.format, toStoredDataPath(storagePath), createdAt);
   } catch (error) {
     await fs.unlink(storagePath).catch(() => undefined);
     throw error;
   }
-  return rowToAsset({ id, original_filename: originalFilename, storage_filename: storageFilename, material_type: input.type, size_bytes: input.data.length, format: image.format, storage_path: storagePath, created_at: createdAt });
+  return rowToAsset({ id, original_filename: originalFilename, storage_filename: storageFilename, material_type: input.type, size_bytes: input.data.length, format: image.format, storage_path: toStoredDataPath(storagePath), created_at: createdAt });
 }
 
 export async function saveGeneratedMaterial(sourcePath: string) {
@@ -92,34 +100,62 @@ export async function saveGeneratedMaterial(sourcePath: string) {
   return saveMaterial({ originalFilename: path.basename(sourcePath), type: "ai", data });
 }
 
-export function listMaterials(input: { type?: MaterialType; query?: string } = {}) {
+export function listMaterials(input: { type?: MaterialType; query?: string; page?: unknown; pageSize?: unknown } = {}) {
+  const database = getDatabase();
+  const query = input.query?.trim();
+  const queryFilter = query ? "original_filename LIKE ?" : "";
+  const queryValues = query ? [`%${query}%`] : [];
   const filters: string[] = [];
   const values: string[] = [];
   if (input.type) {
     filters.push("material_type = ?");
     values.push(input.type);
   }
-  if (input.query?.trim()) {
-    filters.push("original_filename LIKE ?");
-    values.push(`%${input.query.trim()}%`);
+  if (queryFilter) {
+    filters.push(queryFilter);
+    values.push(...queryValues);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
-  const rows = getDatabase().prepare(`SELECT * FROM material_assets ${where} ORDER BY created_at DESC`).all(...values) as MaterialRow[];
-  return rows.map(rowToAsset);
+  const total = Number((database.prepare(`SELECT COUNT(*) AS count FROM material_assets ${where}`).get(...values) as { count: number }).count || 0);
+  const requestedSize = Number(input.pageSize);
+  const pageSize = Number.isFinite(requestedSize) ? Math.min(MATERIAL_MAX_PAGE_SIZE, requestedSize) : MATERIAL_PAGE_SIZE;
+  const paging = resolvePage(input.page, pageSize, total);
+  const rows = database.prepare(`SELECT * FROM material_assets ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...values, paging.pageSize, paging.offset) as MaterialRow[];
+  const countWhere = queryFilter ? `WHERE ${queryFilter}` : "";
+  const countRows = database.prepare(`SELECT material_type AS type, COUNT(*) AS count FROM material_assets ${countWhere} GROUP BY material_type`).all(...queryValues) as Array<{ type: MaterialType; count: number }>;
+  const counts = { all: 0, cover: 0, paragraph: 0, ai: 0 };
+  for (const row of countRows) {
+    counts[row.type] = Number(row.count) || 0;
+    counts.all += counts[row.type];
+  }
+  return { materials: rows.map(rowToAsset), counts, ...paging };
 }
 
-export async function readMaterialFile(id: string) {
+export async function resolveMaterialFile(id: string) {
   const row = getDatabase().prepare("SELECT * FROM material_assets WHERE id = ?").get(id) as MaterialRow | undefined;
   if (!row) return null;
+  const storagePath = resolveDataPath(row.storage_path);
+  if (!storagePath) return null;
   const root = path.resolve(materialsDirectory);
-  const storagePath = path.resolve(row.storage_path);
   const relative = path.relative(root, storagePath);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
   try {
-    const data = await fs.readFile(storagePath);
+    await fs.access(storagePath);
+    return { asset: rowToAsset(row), filePath: storagePath, contentType: contentTypeForFormat(row.format) };
+  } catch {
+    return null;
+  }
+}
+
+export async function readMaterialFile(id: string) {
+  const resolved = await resolveMaterialFile(id);
+  if (!resolved) return null;
+  try {
+    const data = await fs.readFile(resolved.filePath);
     const image = detectImage(data);
-    if (!image || image.format !== row.format) return null;
-    return { asset: rowToAsset(row), data, contentType: image.contentType, filePath: storagePath };
+    if (!image || image.format !== resolved.asset.format) return null;
+    return { ...resolved, data, contentType: image.contentType };
   } catch {
     return null;
   }
@@ -128,8 +164,9 @@ export async function readMaterialFile(id: string) {
 export async function deleteMaterial(id: string) {
   const row = getDatabase().prepare("SELECT * FROM material_assets WHERE id = ?").get(id) as MaterialRow | undefined;
   if (!row) return false;
+  const storagePath = resolveDataPath(row.storage_path);
+  if (!storagePath) throw new Error("素材文件不在允许删除的目录内");
   const root = path.resolve(materialsDirectory);
-  const storagePath = path.resolve(row.storage_path);
   const relative = path.relative(root, storagePath);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("素材文件不在允许删除的目录内");
   try {

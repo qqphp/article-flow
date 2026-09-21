@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getArticlePublishStats, listArticleQueue, listRecentArticles, readLatestArticle } from "../../lib/article-store";
+import { getArticlePublishStats, listArticleQueue, listRecentArticles } from "../../lib/article-store";
 
 export const dynamic = "force-dynamic";
 
@@ -21,8 +21,5 @@ export async function GET(request: Request) {
     return NextResponse.json({ ...queue, stats: getArticlePublishStats() });
   }
 
-  const article = await readLatestArticle();
-  return article
-    ? NextResponse.json({ article })
-    : NextResponse.json({ article: null }, { status: 404 });
+  return NextResponse.json({ error: "请指定 recent、summary 或 queue 参数" }, { status: 400 });
 }

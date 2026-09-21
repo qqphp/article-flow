@@ -5,6 +5,10 @@ import { appendRequestLog } from "../../lib/request-log";
 import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
 import { getAppConfig } from "../../lib/config-store";
+import { HUMANIZE_MAX_OUTPUT_TOKENS } from "../../lib/model-limits";
+import { abortedJsonResponse, mergeSignals } from "../../lib/abort";
+
+export const maxDuration = 120;
 
 function demoHumanize(content: string) {
   return content
@@ -36,7 +40,7 @@ export async function POST(request: Request) {
     const requestBody = {
       model: config.textModel || "gpt-4o",
       temperature: 0.6,
-      max_output_tokens: 6000,
+      max_output_tokens: HUMANIZE_MAX_OUTPUT_TOKENS,
       store: false,
       input: [
         { role: "developer", content: HUMANIZER_PROMPT },
@@ -49,17 +53,19 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(120000),
+      signal: mergeSignals(120000, request.signal),
     });
     const data = await response.json().catch(() => null);
     if (!response.ok) throw new Error(data?.error?.message || data?.error || data?.message || "文章去痕服务返回错误");
     const generated = responseOutputText(data);
     const cleaned = generated.trim().replace(/^```(?:markdown)?\s*/i, "").replace(/\s*```$/, "");
     if (!cleaned) throw new Error("文章去痕服务返回空内容");
+    if (request.signal.aborted) return abortedJsonResponse();
     const content = await saveHumanizedArticle(articleId, cleaned);
     const article = await readArticle(articleId);
     return NextResponse.json({ article, content, demo: false });
   } catch (error: any) {
+    if (request.signal.aborted) return abortedJsonResponse();
     return NextResponse.json({ error: error?.message || "文章去痕失败" }, { status: error?.name === "TimeoutError" ? 504 : 502 });
   }
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchSignedJson, zhihuErrorPayload } from "../../../../lib/zhihu";
+import { hostMatchesDomain } from "../../../../lib/public-url";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export async function POST(request: Request) {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    const allowed = host.endsWith(".bcebos.com") || host === "bcebos.com" || host.endsWith(".zhihu.com") || host.endsWith(".zhimg.com");
+    const allowed = hostMatchesDomain(host, "bcebos.com") || hostMatchesDomain(host, "zhihu.com") || hostMatchesDomain(host, "zhimg.com");
     if (parsed.protocol !== "https:" || !allowed) return NextResponse.json({ error: "解析结果地址无效" }, { status: 400 });
     return NextResponse.json({ result: await fetchSignedJson(url) });
   } catch (error) {

@@ -5,8 +5,12 @@ import { responseOutputText, responsesEndpoint } from "../../lib/responses";
 import { modelFetch } from "../../lib/model-fetch";
 import { AppConfig, getAppConfig } from "../../lib/config-store";
 import { ArticleStyle, getArticleStyle } from "../../lib/article-styles";
+import { GENERATE_MAX_OUTPUT_TOKENS } from "../../lib/model-limits";
+import { abortedJsonResponse, mergeSignals, throwIfAborted } from "../../lib/abort";
 
-type GenerateBody = { topic?: string; styleId?: string; search?: boolean };
+export const maxDuration = 360;
+
+type GenerateBody = { topic?: string; styleId?: string; search?: boolean; articleId?: string };
 
 const demo = (topic: string, style: ArticleStyle, sources: ResearchSource[]) => ({
   title: topic || "把一个想法，变成值得分享的内容",
@@ -20,30 +24,41 @@ const demo = (topic: string, style: ArticleStyle, sources: ResearchSource[]) => 
   demo: true,
 });
 
-async function firecrawlSearch(topic: string, config: AppConfig) {
+type FirecrawlSearchResult = { sources: ResearchSource[]; searched: boolean; error?: string };
+
+async function firecrawlSearch(topic: string, config: AppConfig, signal?: AbortSignal): Promise<FirecrawlSearchResult> {
   const key = config.firecrawlKey;
-  if (!key) return [] as ResearchSource[];
+  if (!key) return { sources: [], searched: false, error: "未配置 Firecrawl API Key，已跳过资料搜索" };
   const endpoint = "https://api.firecrawl.dev/v1/search";
   const requestBody = { query: topic, limit: 5 };
   try {
+    throwIfAborted(signal);
     await appendRequestLog({ type: "text", operation: "Firecrawl 搜索", endpoint, model: "firecrawl", requestBody });
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(12000),
+      signal: mergeSignals(12000, signal),
     });
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (data.data ?? data.results ?? []).map((item: any) => ({ title: item.title, url: item.url, description: item.description })).filter((item: ResearchSource) => Boolean(item.url)).slice(0, 5);
-  } catch { return []; }
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = data?.error?.message || data?.error || data?.message;
+      return { sources: [], searched: false, error: typeof message === "string" && message.trim() ? message : `Firecrawl 搜索失败（${response.status}）` };
+    }
+    const sources = (data?.data ?? data?.results ?? []).map((item: any) => ({ title: item.title, url: item.url, description: item.description })).filter((item: ResearchSource) => Boolean(item.url)).slice(0, 5);
+    return { sources, searched: true };
+  } catch (error: any) {
+    if (signal?.aborted) throw error;
+    return { sources: [], searched: false, error: error?.name === "TimeoutError" ? "Firecrawl 搜索超时，已跳过资料搜索" : "Firecrawl 搜索失败，请检查密钥和网络" };
+  }
 }
 
-async function callModel(topic: string, style: ArticleStyle, sources: ResearchSource[], config: AppConfig) {
+async function callModel(topic: string, style: ArticleStyle, sources: ResearchSource[], config: AppConfig, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const apiKey = config.textKey;
   const base = config.textBase.replace(/\/$/, "");
   if (!apiKey || !base) return null;
-  const requestBody = { model: config.textModel || "gpt-4o", temperature: 0.75, max_output_tokens: 3000, store: false, input: [
+  const requestBody = { model: config.textModel || "gpt-4o", temperature: 0.75, max_output_tokens: GENERATE_MAX_OUTPUT_TOKENS, store: false, input: [
     { role: "developer", content: `你是一位中文公众号作者。请严格遵循以下“${style.title}”写作风格指南，输出 JSON，字段为 title、alternatives（严格返回 3–6 个字符串）、content（Markdown 字符串）。正文内容不得展示、罗列或引用参考资料、来源链接或引用列表；参考资料仅用于辅助事实判断。\n\n--- 写作风格指南开始 ---\n${style.content}\n--- 写作风格指南结束 ---` },
     { role: "user", content: `主题：${topic}\n参考资料：${sources.map((source) => `${source.title || "资料"}: ${source.url}`).join("\n") || "无"}` },
   ], text: { format: { type: "json_object" } } };
@@ -54,7 +69,7 @@ async function callModel(topic: string, style: ArticleStyle, sources: ResearchSo
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: mergeSignals(timeoutMs, signal),
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -64,7 +79,15 @@ async function callModel(topic: string, style: ArticleStyle, sources: ResearchSo
   const data = await response.json();
   const raw = responseOutputText(data);
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const value = JSON.parse(cleaned || "{}");
+  let value: { title?: unknown; alternatives?: unknown; content?: unknown };
+  try {
+    value = JSON.parse(cleaned || "{}");
+  } catch {
+    const truncated = data?.status === "incomplete" || data?.incomplete_details?.reason === "max_output_tokens";
+    throw new Error(truncated
+      ? `AI 输出被截断，可能是篇幅超过上限（${GENERATE_MAX_OUTPUT_TOKENS} tokens）。请缩短主题或风格要求后重试`
+      : `AI 返回的 JSON 无法解析，可能是篇幅超过输出上限（${GENERATE_MAX_OUTPUT_TOKENS} tokens）。请缩短主题或风格要求后重试`);
+  }
   if (typeof value.content !== "string" || !value.content.trim()) throw new Error("AI 返回内容为空");
   return { ...value, sources, demo: false };
 }
@@ -76,20 +99,30 @@ export async function POST(request: Request) {
   const style = await getArticleStyle(body.styleId);
   if (!style) return NextResponse.json({ error: "所选文章风格不存在或已失效，请刷新风格列表后重试" }, { status: 400 });
   const config = getAppConfig();
-  const sources = body.search ? await firecrawlSearch(topic, config) : [];
+  const articleId = typeof body.articleId === "string" && body.articleId.trim() ? body.articleId.trim() : undefined;
+  let sources: ResearchSource[] = [];
+  let searchMeta: { searched: boolean; error?: string } = { searched: false };
   try {
-    const result = await callModel(topic, style, sources, config) || demo(topic, style, sources);
+    const searchResult = body.search ? await firecrawlSearch(topic, config, request.signal) : { sources: [] as ResearchSource[], searched: false };
+    throwIfAborted(request.signal);
+    sources = searchResult.sources;
+    searchMeta = { searched: searchResult.searched, error: searchResult.error };
+    const result = await callModel(topic, style, sources, config, request.signal) || demo(topic, style, sources);
+    throwIfAborted(request.signal);
     const title = typeof result.title === "string" && result.title.trim() ? result.title.trim() : topic;
-    const article = await saveGeneratedArticle({ title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives });
+    const article = await saveGeneratedArticle({ title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives, search: searchMeta, articleId });
     const saved = await readArticle(article.id);
-    return NextResponse.json({ ...result, ...saved, title, articleId: article.id, firecrawlSearched: Boolean(body.search) });
+    return NextResponse.json({ ...result, ...saved, title, articleId: article.id, selectedTitle: saved?.selectedTitle || title, firecrawlSearched: searchResult.searched, firecrawlError: searchResult.error || null });
   } catch (error: any) {
+    if (request.signal.aborted) return abortedJsonResponse();
+    const status = Number(error?.status);
+    if (status === 404 || status === 409) return NextResponse.json({ error: error.message }, { status });
     const configured = Boolean(config.textKey && config.textBase);
     const timedOut = error?.name === "TimeoutError";
     if (configured) return NextResponse.json({ error: timedOut ? "文章生成超过 6 分钟，请稍后重试或缩短主题后重试" : error?.message || "AI 文章生成失败，请稍后重试" }, { status: timedOut ? 504 : 502 });
     const result = demo(topic, style, sources);
-    const article = await saveGeneratedArticle({ title: result.title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives });
+    const article = await saveGeneratedArticle({ title: result.title, topic, style: style.title, content: result.content, sources, alternatives: result.alternatives, search: searchMeta, articleId });
     const saved = await readArticle(article.id);
-    return NextResponse.json({ ...result, ...saved, articleId: article.id, firecrawlSearched: Boolean(body.search) });
+    return NextResponse.json({ ...result, ...saved, articleId: article.id, selectedTitle: saved?.selectedTitle || result.title, firecrawlSearched: searchMeta.searched, firecrawlError: searchMeta.error || null });
   }
 }
