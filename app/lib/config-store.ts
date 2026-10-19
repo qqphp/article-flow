@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "fs";
+import path from "path";
+import { parseEnv } from "node:util";
 import { getDatabase } from "./database";
 
 export const CONFIG_KEYS = [
@@ -31,10 +34,10 @@ const secretConfigKeySet = new Set<ConfigKey>(SECRET_CONFIG_KEYS);
 
 const ENV_FALLBACKS: Record<ConfigKey, string[]> = {
   textBase: ["AI_BASE_URL", "OPENAI_BASE_URL"],
-  textKey: ["AI_API_KEY", "OPENAI_API_KEY"],
+  textKey: ["AI_API_KEY"],
   textModel: ["AI_TEXT_MODEL"],
   imageUrl: ["AI_IMAGE_URL"],
-  imageKey: ["AI_API_KEY", "OPENAI_API_KEY"],
+  imageKey: ["AI_IMAGE_API_KEY"],
   imageModel: ["AI_IMAGE_MODEL"],
   firecrawlKey: ["FIRECRAWL_API_KEY"],
   zhihuAccessSecret: ["ZHIHU_ACCESS_SECRET"],
@@ -59,10 +62,13 @@ function storedValues() {
 
 export function getAppConfig(): AppConfig {
   const stored = storedValues();
+  const localEnvPath = path.join(process.cwd(), ".env.local");
+  const localEnv = existsSync(localEnvPath) ? parseEnv(readFileSync(localEnvPath, "utf8")) : {};
   return Object.fromEntries(CONFIG_KEYS.map((key) => {
     const value = stored.get(key);
     if (value) return [key, value];
-    return [key, ENV_FALLBACKS[key].map((envKey) => asString(process.env[envKey])).find(Boolean) || ""];
+    const env = key === "textKey" || key === "imageKey" ? localEnv : process.env;
+    return [key, ENV_FALLBACKS[key].map((envKey) => asString(env[envKey])).find(Boolean) || ""];
   })) as AppConfig;
 }
 

@@ -33,12 +33,14 @@ copy .env.example .env.local
 ```
 
 - `AI_BASE_URL`、`AI_API_KEY`、`AI_TEXT_MODEL`：OpenAI 兼容文本模型
-- `AI_IMAGE_URL`、`AI_IMAGE_MODEL`：图片生成接口
+- `AI_IMAGE_URL`、`AI_IMAGE_API_KEY`、`AI_IMAGE_MODEL`：图片生成接口
 - `FIRECRAWL_API_KEY`：资料搜索
 - `ZHIHU_ACCESS_SECRET`：知乎数据开放平台 Access Secret
 - `WECHAT_APPID`、`WECHAT_SECRET`、`WECHAT_AUTHOR`：微信公众号草稿发布
 
 配置中心里的值优先于环境变量。模型接口地址必须是公网 http(s)，不能指向本机或内网。
+
+文本密钥 `AI_API_KEY` 和图片密钥 `AI_IMAGE_API_KEY` 仅从配置中心数据库或项目根目录的 `.env.local` 读取，数据库优先。两者独立，未配置时为空；不读取系统环境变量、其他 `.env` 文件或 `OPENAI_API_KEY`。
 
 API 路由：
 
