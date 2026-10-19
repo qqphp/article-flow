@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronRight, ExternalLink, Flame, Image as ImageIcon, LayoutDashboard, Menu, MoreHorizontal, PenLine, Plus, ScrollText, Send, Settings2, Sparkles } from "lucide-react";
+import { ChevronRight, ExternalLink, Flame, Github, Image as ImageIcon, LayoutDashboard, Menu, MoreHorizontal, PenLine, Plus, ScrollText, Send, Settings2, Sparkles } from "lucide-react";
 import { NotifyProvider } from "./notify";
 import { NEW_ARTICLE_EVENT, studioNav } from "./studio-constants";
 
@@ -61,10 +61,16 @@ function StudioChrome({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="side-bottom">
-          <a className="blog-link" href="https://qqphp.com" target="_blank" rel="noreferrer">
-            <ExternalLink size={17}/>
-            <span><b>阿雷博客</b><small>qqphp.com</small></span>
-          </a>
+          <div className="sidebar-links">
+            <a className="blog-link" href="https://qqphp.com" target="_blank" rel="noreferrer">
+              <ExternalLink size={17}/>
+              <span><b>阿雷博客</b><small>qqphp.com</small></span>
+            </a>
+            <a className="blog-link" href="https://github.com/qqphp/article-flow" target="_blank" rel="noreferrer">
+              <Github size={17}/>
+              <span><b>开源地址</b><small>github.com/qqphp/article-flow</small></span>
+            </a>
+          </div>
           <div className="user-row"><div className="avatar soft">阿</div><div><b>开发阿雷</b><small>Pro 计划</small></div><MoreHorizontal size={17}/></div>
         </div>
       </aside>
