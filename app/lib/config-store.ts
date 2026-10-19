@@ -12,6 +12,8 @@ export const CONFIG_KEYS = [
   "wechatAppId",
   "wechatSecret",
   "wechatAuthor",
+  "wechatNeedOpenComment",
+  "wechatOnlyFansCanComment",
   "wechatAutoPublish",
 ] as const;
 
@@ -39,6 +41,8 @@ const ENV_FALLBACKS: Record<ConfigKey, string[]> = {
   wechatAppId: ["WECHAT_APPID"],
   wechatSecret: ["WECHAT_SECRET"],
   wechatAuthor: ["WECHAT_AUTHOR"],
+  wechatNeedOpenComment: [],
+  wechatOnlyFansCanComment: [],
   wechatAutoPublish: ["WECHAT_AUTO_PUBLISH"],
 };
 
@@ -71,6 +75,8 @@ export function getSafeAppConfig() {
     imageModel: config.imageModel,
     wechatAppId: config.wechatAppId,
     wechatAuthor: config.wechatAuthor,
+    wechatNeedOpenComment: config.wechatNeedOpenComment,
+    wechatOnlyFansCanComment: config.wechatOnlyFansCanComment,
     wechatAutoPublish: config.wechatAutoPublish,
   };
   const configured = Object.fromEntries(SECRET_CONFIG_KEYS.map((key) => [key, Boolean(config[key])])) as Record<ConfigKey, boolean>;

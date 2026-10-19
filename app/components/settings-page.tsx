@@ -106,13 +106,17 @@ function ArticleStyleSettings() {
 function ConfigPlatforms({ values, configured, update, saving, onSave }: { values: Record<string, string>; configured: Record<string, boolean>; update: (key: string, value: string) => void; saving: boolean; onSave: () => Promise<void> }) {
   const secretConfigured = configured.wechatSecret;
   const autoPublish = values.wechatAutoPublish === "true";
+  const needOpenComment = values.wechatNeedOpenComment === "true";
+  const onlyFansCanComment = values.wechatOnlyFansCanComment === "true";
   return <div className="platform-layout">
     <div className="platform-list"><div className="platform-item active"><BookOpen/><span><b>微信公众号</b><small>{secretConfigured ? "已配置" : "未配置"}</small></span><ChevronRight size={15}/></div></div>
     <div className="panel config-panel platform-form"><div className="panel-title"><div><h2>微信公众号</h2><p>配置后可创建草稿；开启自动发布后将继续提交发布。</p></div><span className={secretConfigured ? "connected" : "connected muted"}>{secretConfigured ? <><span className="green-dot"/> 已配置</> : "未配置"}</span></div>
       <label>微信公众号 AppID</label><div className="input-icon"><KeyRound size={16}/><input value={values.wechatAppId || ""} placeholder="请输入 AppID" onChange={(event) => update("wechatAppId", event.target.value)}/></div>
       <label>微信公众号 AppSecret</label><div className="input-icon"><KeyRound size={16}/><input type="password" value={values.wechatSecret || ""} placeholder={secretConfigured ? "已保存，重新输入才会覆盖" : "请输入 AppSecret"} onChange={(event) => update("wechatSecret", event.target.value)}/></div>
       <label>作者名称</label><div className="input-icon"><KeyRound size={16}/><input value={values.wechatAuthor || ""} placeholder="请输入作者名称" onChange={(event) => update("wechatAuthor", event.target.value)}/></div>
-      <div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Rocket size={17}/></div><div><b>自动发布</b><small>关闭后仅创建草稿，不会直接发布</small></div></div><button className={autoPublish ? "toggle on" : "toggle"} onClick={() => update("wechatAutoPublish", String(!autoPublish))}><i/></button></div>
+      <div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Check size={17}/></div><div><b>打开评论</b><small>开启后允许读者评论，默认关闭</small></div></div><button className={needOpenComment ? "toggle on" : "toggle"} onClick={() => update("wechatNeedOpenComment", String(!needOpenComment))}><i/></button></div>
+      <div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Check size={17}/></div><div><b>仅粉丝可评论</b><small>开启后仅公众号粉丝可评论，默认所有人可评论</small></div></div><button className={onlyFansCanComment ? "toggle on" : "toggle"} onClick={() => update("wechatOnlyFansCanComment", String(!onlyFansCanComment))}><i/></button></div>
+      <div className="option-row publish-toggle"><div className="option-label"><div className="option-icon"><Rocket size={17}/></div><div><b>自动发布</b><small>关闭后仅创建草稿，不会直接发布。仅允许企业主体已认证账号调用。</small></div></div><button className={autoPublish ? "toggle on" : "toggle"} onClick={() => update("wechatAutoPublish", String(!autoPublish))}><i/></button></div>
       <button className="save-wide" onClick={() => void onSave()} disabled={saving}>{saving ? "保存中..." : "保存微信公众号配置"}</button>
     </div>
   </div>;

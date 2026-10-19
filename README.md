@@ -6,9 +6,18 @@
 
 ## 运行
 
+项目固定使用 Node.js 24.21.0。安装依赖前请先切换到此版本；`npm install` 和应用启动命令会检查 Node 版本，启动时也会检查 SQLite 原生驱动。
+
 ```bash
-npm install
+nvm use 24.21.0
+npm ci
 npm run dev
+```
+
+运行环境检查：
+
+```bash
+npm run test:runtime
 ```
 
 打开 `http://localhost:3000`。首次启动后，在左侧 **配置中心** 填写模型、Firecrawl、知乎和微信公众号密钥。未配置时，生成、去痕、图片和发布接口会使用本地演示回退，方便直接体验界面。

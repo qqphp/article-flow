@@ -89,7 +89,11 @@ async function callModel(topic: string, style: ArticleStyle, sources: ResearchSo
       : `AI 返回的 JSON 无法解析，可能是篇幅超过输出上限（${GENERATE_MAX_OUTPUT_TOKENS} tokens）。请缩短主题或风格要求后重试`);
   }
   if (typeof value.content !== "string" || !value.content.trim()) throw new Error("AI 返回内容为空");
-  return { ...value, sources, demo: false };
+  const title = typeof value.title === "string" ? value.title : undefined;
+  const alternatives = Array.isArray(value.alternatives) && value.alternatives.every((item): item is string => typeof item === "string")
+    ? value.alternatives
+    : undefined;
+  return { ...value, title, alternatives, content: value.content, sources, demo: false };
 }
 
 export async function POST(request: Request) {

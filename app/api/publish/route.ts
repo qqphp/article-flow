@@ -159,8 +159,8 @@ export async function POST(request: Request) {
           author: config.wechatAuthor,
           content,
           thumb_media_id: thumbMediaId,
-          need_open_comment: 1,
-          only_fans_can_comment: 0,
+          need_open_comment: config.wechatNeedOpenComment === "true" ? 1 : 0,
+          only_fans_can_comment: config.wechatOnlyFansCanComment === "true" ? 1 : 0,
         }],
       };
       await appendRequestLog({ type: "text", operation: "微信公众号创建草稿", endpoint: "https://api.weixin.qq.com/cgi-bin/draft/add", model: "微信公众号", requestBody: { articleId, title, imageCount: (content.match(/<img\b/gi) || []).length } });

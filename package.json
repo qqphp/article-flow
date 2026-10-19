@@ -2,15 +2,23 @@
   "name": "article-flow",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "24.21.0"
+  },
   "scripts": {
+    "predev": "node scripts/check-runtime.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/check-runtime.mjs",
     "build": "next build",
+    "prelint": "node scripts/check-runtime.mjs",
+    "prestart": "node scripts/check-runtime.mjs",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:runtime": "node scripts/check-runtime.mjs"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^12.11.1",
     "lucide-react": "^0.468.0",
     "markdown-it": "^15.0.2",
     "next": "14.2.5",
@@ -22,11 +30,15 @@
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",
-    "@types/node": "^20.14.12",
+    "@types/node": "^24.19.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.5",
     "typescript": "^5.5.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "unrs-resolver@1.12.2": true
   }
 }
