@@ -20,7 +20,7 @@ npm run dev
 npm run test:runtime
 ```
 
-打开 `http://localhost:3000`。首次启动后，在左侧 **配置中心** 填写模型、Firecrawl、知乎和微信公众号密钥。未配置时，生成、去痕、图片和发布接口会使用本地演示回退，方便直接体验界面。
+打开 `http://localhost:3007`。首次启动后，在左侧 **配置中心** 填写模型、Firecrawl、知乎和微信公众号密钥。未配置时，生成、去痕、图片和发布接口会使用本地演示回退，方便直接体验界面。
 
 配置保存在本地 SQLite（`data/article-flow.sqlite`），文章和素材文件在 `data/articles`、`data/materials`。
 
